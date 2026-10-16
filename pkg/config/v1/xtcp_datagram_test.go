@@ -24,8 +24,8 @@ func TestXTCPDatagramSettingsRemainFrpcLocal(t *testing.T) {
 	if strings.Contains(string(wire), "datagram") || strings.Contains(string(wire), "9313") {
 		t.Fatalf("new frpc-local fields leaked into frps registration: %s", wire)
 	}
-	copy := proxy.Clone().(*XTCPProxyConfig)
-	copy.Datagram.PeerAddr = "127.0.0.1:9999"
+	clonedProxy := proxy.Clone().(*XTCPProxyConfig)
+	clonedProxy.Datagram.PeerAddr = "127.0.0.1:9999"
 	if proxy.Datagram.PeerAddr != "127.0.0.1:9314" {
 		t.Fatal("XTCP proxy clone shares mutable DATAGRAM options")
 	}

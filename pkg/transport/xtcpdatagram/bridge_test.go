@@ -62,8 +62,10 @@ func testTLS(t *testing.T) *tls.Config {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &tls.Config{Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
-		NextProtos: []string{"frp"}}
+	return &tls.Config{
+		Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: key}},
+		NextProtos:   []string{"frp"},
+	}
 }
 
 func TestActualQUICDatagramAndTCPStream(t *testing.T) {

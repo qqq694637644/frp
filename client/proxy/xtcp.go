@@ -207,7 +207,7 @@ func (pxy *XTCPProxy) listenByQUIC(listenConn *net.UDPConn, _ *net.UDPAddr, star
 		xl.Errorf("quic accept connection error: %v", err)
 		return
 	}
-	defer c.CloseWithError(0, "")
+	defer func() { _ = c.CloseWithError(0, "") }()
 	if pxy.cfg.Datagram != nil {
 		capability := c.ConnectionState().SupportsDatagrams
 		if !capability.Local || !capability.Remote {
