@@ -21,6 +21,7 @@ import (
 
 	"github.com/fatedier/frp/pkg/config/types"
 	"github.com/fatedier/frp/pkg/msg"
+	"github.com/fatedier/frp/pkg/transport/xtcpdatagram"
 	"github.com/fatedier/frp/pkg/util/jsonx"
 	"github.com/fatedier/frp/pkg/util/util"
 )
@@ -479,6 +480,8 @@ type XTCPProxyConfig struct {
 
 	// NatTraversal configuration for NAT traversal
 	NatTraversal *NatTraversalConfig `json:"natTraversal,omitempty"`
+	// Datagram is local frpc configuration and is never sent to frps.
+	Datagram *xtcpdatagram.Config `json:"datagram,omitempty"`
 }
 
 func (c *XTCPProxyConfig) MarshalToMsg(m *msg.NewProxy) {
@@ -500,6 +503,7 @@ func (c *XTCPProxyConfig) Clone() ProxyConfigurer {
 	out.ProxyBaseConfig = c.ProxyBaseConfig.Clone()
 	out.AllowUsers = slices.Clone(c.AllowUsers)
 	out.NatTraversal = c.NatTraversal.Clone()
+	out.Datagram = c.Datagram.Clone()
 	return &out
 }
 

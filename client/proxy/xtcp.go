@@ -30,6 +30,7 @@ import (
 	"github.com/fatedier/frp/pkg/naming"
 	"github.com/fatedier/frp/pkg/nathole"
 	"github.com/fatedier/frp/pkg/transport"
+	"github.com/fatedier/frp/pkg/transport/xtcpdatagram"
 	netpkg "github.com/fatedier/frp/pkg/util/net"
 )
 
@@ -192,17 +193,34 @@ func (pxy *XTCPProxy) listenByQUIC(listenConn *net.UDPConn, _ *net.UDPAddr, star
 			MaxIdleTimeout:     time.Duration(pxy.clientCfg.Transport.QUIC.MaxIdleTimeout) * time.Second,
 			MaxIncomingStreams: int64(pxy.clientCfg.Transport.QUIC.MaxIncomingStreams),
 			KeepAlivePeriod:    time.Duration(pxy.clientCfg.Transport.QUIC.KeepalivePeriod) * time.Second,
+			EnableDatagrams:    pxy.cfg.Datagram != nil,
 		},
 	)
 	if err != nil {
 		xl.Warnf("dial quic error: %v", err)
 		return
 	}
+	defer quicListener.Close()
 	// only accept one connection from raddr
 	c, err := quicListener.Accept(pxy.ctx)
 	if err != nil {
 		xl.Errorf("quic accept connection error: %v", err)
 		return
+	}
+	defer c.CloseWithError(0, "")
+	if pxy.cfg.Datagram != nil {
+		capability := c.ConnectionState().SupportsDatagrams
+		if !capability.Local || !capability.Remote {
+			xl.Errorf("XTCP peer did not negotiate QUIC DATAGRAM")
+			return
+		}
+		bridge, err := xtcpdatagram.Start(pxy.ctx, c, pxy.cfg.Datagram)
+		if err != nil {
+			xl.Errorf("XTCP local datagram bridge error: %v", err)
+			return
+		}
+		defer bridge.Close()
+		xl.Infof("XTCP QUIC DATAGRAM enabled (local %s -> app %s)", pxy.cfg.Datagram.ListenAddr, pxy.cfg.Datagram.PeerAddr)
 	}
 	for {
 		stream, err := c.AcceptStream(pxy.ctx)

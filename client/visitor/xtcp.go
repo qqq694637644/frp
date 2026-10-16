@@ -34,6 +34,7 @@ import (
 	"github.com/fatedier/frp/pkg/naming"
 	"github.com/fatedier/frp/pkg/nathole"
 	"github.com/fatedier/frp/pkg/transport"
+	"github.com/fatedier/frp/pkg/transport/xtcpdatagram"
 	netpkg "github.com/fatedier/frp/pkg/util/net"
 	"github.com/fatedier/frp/pkg/util/util"
 	"github.com/fatedier/frp/pkg/util/xlog"
@@ -57,7 +58,7 @@ func (sv *XTCPVisitor) Run() (err error) {
 	if sv.cfg.Protocol == "kcp" {
 		sv.session = NewKCPTunnelSession()
 	} else {
-		sv.session = NewQUICTunnelSession(sv.clientCfg)
+		sv.session = NewQUICTunnelSession(sv.clientCfg, sv.cfg.Datagram)
 	}
 
 	if sv.cfg.BindPort > 0 {
@@ -387,16 +388,19 @@ func (ks *KCPTunnelSession) Close() {
 }
 
 type QUICTunnelSession struct {
-	session    *quic.Conn
-	listenConn *net.UDPConn
-	mu         sync.RWMutex
+	session        *quic.Conn
+	listenConn     *net.UDPConn
+	datagramBridge *xtcpdatagram.Bridge
+	mu             sync.RWMutex
 
-	clientCfg *v1.ClientCommonConfig
+	clientCfg   *v1.ClientCommonConfig
+	datagramCfg *xtcpdatagram.Config
 }
 
-func NewQUICTunnelSession(clientCfg *v1.ClientCommonConfig) TunnelSession {
+func NewQUICTunnelSession(clientCfg *v1.ClientCommonConfig, datagramCfg *xtcpdatagram.Config) TunnelSession {
 	return &QUICTunnelSession{
-		clientCfg: clientCfg,
+		clientCfg:   clientCfg,
+		datagramCfg: datagramCfg,
 	}
 }
 
@@ -411,13 +415,28 @@ func (qs *QUICTunnelSession) Init(listenConn *net.UDPConn, raddr *net.UDPAddr) e
 			MaxIdleTimeout:     time.Duration(qs.clientCfg.Transport.QUIC.MaxIdleTimeout) * time.Second,
 			MaxIncomingStreams: int64(qs.clientCfg.Transport.QUIC.MaxIncomingStreams),
 			KeepAlivePeriod:    time.Duration(qs.clientCfg.Transport.QUIC.KeepalivePeriod) * time.Second,
+			EnableDatagrams:    qs.datagramCfg != nil,
 		})
 	if err != nil {
 		return fmt.Errorf("dial quic error: %v", err)
 	}
+	var bridge *xtcpdatagram.Bridge
+	if qs.datagramCfg != nil {
+		capability := quicConn.ConnectionState().SupportsDatagrams
+		if !capability.Local || !capability.Remote {
+			_ = quicConn.CloseWithError(0, "peer lacks DATAGRAM")
+			return fmt.Errorf("XTCP peer did not negotiate QUIC DATAGRAM")
+		}
+		bridge, err = xtcpdatagram.Start(context.Background(), quicConn, qs.datagramCfg)
+		if err != nil {
+			_ = quicConn.CloseWithError(0, "local datagram setup failed")
+			return fmt.Errorf("XTCP local datagram bridge error: %w", err)
+		}
+	}
 	qs.mu.Lock()
 	qs.session = quicConn
 	qs.listenConn = listenConn
+	qs.datagramBridge = bridge
 	qs.mu.Unlock()
 	return nil
 }
@@ -439,6 +458,10 @@ func (qs *QUICTunnelSession) OpenConn(ctx context.Context) (net.Conn, error) {
 func (qs *QUICTunnelSession) Close() {
 	qs.mu.Lock()
 	defer qs.mu.Unlock()
+	if qs.datagramBridge != nil {
+		qs.datagramBridge.Close()
+		qs.datagramBridge = nil
+	}
 	if qs.session != nil {
 		_ = qs.session.CloseWithError(0, "")
 		qs.session = nil

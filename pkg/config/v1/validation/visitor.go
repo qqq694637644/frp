@@ -20,6 +20,7 @@ import (
 	"slices"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
+	"github.com/fatedier/frp/pkg/transport/xtcpdatagram"
 )
 
 func ValidateVisitorConfigurer(c v1.VisitorConfigurer) error {
@@ -57,6 +58,12 @@ func validateVisitorBaseConfig(c *v1.VisitorBaseConfig) error {
 func validateXTCPVisitorConfig(c *v1.XTCPVisitorConfig) error {
 	if !slices.Contains([]string{"kcp", "quic"}, c.Protocol) {
 		return fmt.Errorf("protocol should be kcp or quic")
+	}
+	if c.Datagram != nil && c.Protocol != "quic" {
+		return fmt.Errorf("XTCP datagram requires protocol = quic")
+	}
+	if err := xtcpdatagram.Validate(c.Datagram); err != nil {
+		return err
 	}
 	return nil
 }
