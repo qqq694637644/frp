@@ -155,7 +155,13 @@ func Dial(raw string) (*Conn, error) {
 		return nil, err
 	}
 	relayPort := int(binary.BigEndian.Uint16(port[:]))
-	if addr.Equal(net.IPv4zero) {
+	// RFC 1928 UDP ASSOCIATE can report an unspecified bind address, either
+	// 0.0.0.0 (IPv4) or :: (IPv6). Neither is a remote relay endpoint.
+	// The SOCKS5 control connection was established to 127.0.0.1 and the
+	// UDP socket is bound to IPv4 loopback, so try that same local proxy
+	// address without ever sending a raw UDP datagram to the VPS interface.
+	// IPv6-only local relays will fail closed until explicitly supported.
+	if addr != nil && addr.IsUnspecified() {
 		addr = net.IPv4(127, 0, 0, 1)
 	}
 	if addr.To4() == nil || !addr.IsLoopback() || relayPort == 0 {
