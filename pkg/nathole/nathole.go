@@ -80,6 +80,9 @@ type PrepareOptions struct {
 	// DisableAssistedAddrs disables the use of local network interfaces
 	// for assisted connections during NAT traversal
 	DisableAssistedAddrs bool
+	// BindPort pins the native XTCP Proxy's STUN, punch and QUIC UDP socket
+	// to this local port; zero retains random-port behavior.
+	BindPort int
 	// UDPProxyURL forces Visitor STUN/hole punching and QUIC through SOCKS5
 	// UDP ASSOCIATE, without opening a raw public UDP socket.
 	UDPProxyURL string
@@ -145,11 +148,32 @@ func PreCheck(
 
 // Prepare is used to do some preparation work before penetration.
 func Prepare(stunServers []string, opts PrepareOptions) (*PrepareResult, error) {
+	if opts.BindPort < 0 || opts.BindPort > 65535 {
+		return nil, fmt.Errorf("invalid NAT UDP bindPort %d (expected 0..65535)", opts.BindPort)
+	}
 	if opts.UDPProxyURL != "" {
+		if opts.BindPort != 0 {
+			return nil, fmt.Errorf("fixed NAT UDP bindPort is not supported with SOCKS5 UDP proxy")
+		}
 		return prepareThroughSOCKS5(stunServers, opts)
 	}
-	// discover for Nat type
-	addrs, localAddr, err := Discover(stunServers, "")
+	localBindAddr := ""
+	if opts.BindPort != 0 {
+		localBindAddr = net.JoinHostPort("0.0.0.0", strconv.Itoa(opts.BindPort))
+	}
+	// Preserve this exact UDP socket across STUN, punching and QUIC instead
+	// of closing it after STUN and attempting to rebind the same port.
+	discoverConn, err := listen(localBindAddr)
+	if err != nil {
+		return nil, fmt.Errorf("discover error: bind NAT UDP socket: %w", err)
+	}
+	retained := false
+	defer func() {
+		if !retained {
+			_ = discoverConn.Close()
+		}
+	}()
+	addrs, err := discoverAddresses(discoverConn, stunServers)
 	if err != nil {
 		return nil, fmt.Errorf("discover error: %v", err)
 	}
@@ -163,13 +187,9 @@ func Prepare(stunServers []string, opts PrepareOptions) (*PrepareResult, error) 
 		return nil, fmt.Errorf("classify nat feature error: %v", err)
 	}
 
-	laddr, err := net.ResolveUDPAddr("udp4", localAddr.String())
-	if err != nil {
-		return nil, fmt.Errorf("resolve local udp addr error: %v", err)
-	}
-	listenConn, err := net.ListenUDP("udp4", laddr)
-	if err != nil {
-		return nil, fmt.Errorf("listen local udp addr error: %v", err)
+	listenConn := discoverConn.conn
+	if err := listenConn.SetReadDeadline(time.Time{}); err != nil {
+		return nil, fmt.Errorf("reset NAT UDP read deadline: %w", err)
 	}
 
 	// Apply NAT traversal options
@@ -177,9 +197,11 @@ func Prepare(stunServers []string, opts PrepareOptions) (*PrepareResult, error) 
 	if !opts.DisableAssistedAddrs {
 		assistedAddrs = make([]string, 0, len(localIPs))
 		for _, ip := range localIPs {
-			assistedAddrs = append(assistedAddrs, net.JoinHostPort(ip, strconv.Itoa(laddr.Port)))
+			assistedAddrs = append(assistedAddrs,
+				net.JoinHostPort(ip, strconv.Itoa(listenConn.LocalAddr().(*net.UDPAddr).Port)))
 		}
 	}
+	retained = true
 	return &PrepareResult{
 		Addrs:         addrs,
 		AssistedAddrs: assistedAddrs,

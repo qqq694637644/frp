@@ -90,6 +90,10 @@ type NatTraversalConfig struct {
 	// for assisted connections during NAT traversal. When enabled,
 	// only STUN-discovered public addresses will be used.
 	DisableAssistedAddrs bool `json:"disableAssistedAddrs,omitempty"`
+	// BindPort fixes the local UDP port for STUN discovery and XTCP hole
+	// punching on a Proxy. Zero (the default) selects an ephemeral port.
+	// It does not configure frps or the public NAT-mapped port.
+	BindPort int `json:"bindPort,omitempty"`
 	// UDPProxyURL sends XTCP Visitor STUN, NAT punching and QUIC datagrams
 	// exclusively through a local SOCKS5 UDP ASSOCIATE relay. It is never
 	// forwarded to frps and must not be used without transport.proxyURL.

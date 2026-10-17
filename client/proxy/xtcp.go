@@ -68,8 +68,12 @@ func (pxy *XTCPProxy) InWorkConn(conn net.Conn, startWorkConnMsg *msg.StartWorkC
 
 	// Prepare NAT traversal options
 	var opts nathole.PrepareOptions
-	if pxy.cfg.NatTraversal != nil && pxy.cfg.NatTraversal.DisableAssistedAddrs {
-		opts.DisableAssistedAddrs = true
+	if pxy.cfg.NatTraversal != nil {
+		opts.DisableAssistedAddrs = pxy.cfg.NatTraversal.DisableAssistedAddrs
+		opts.BindPort = pxy.cfg.NatTraversal.BindPort
+	}
+	if opts.BindPort != 0 {
+		xl.Infof("XTCP NAT using fixed local UDP port %d for STUN and hole punching", opts.BindPort)
 	}
 
 	prepareResult, err := nathole.Prepare([]string{pxy.clientCfg.NatHoleSTUNServer}, opts)

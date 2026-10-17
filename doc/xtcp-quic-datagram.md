@@ -27,9 +27,16 @@ localPort = 9312
 [proxies.datagram]
 listenAddr = "127.0.0.1:9313"
 peerAddr = "127.0.0.1:9314"
+
+[proxies.natTraversal]
+bindPort = 39999
 ```
 
 境内 Python SOCKS5 在 TCP `127.0.0.1:9312` 接收 RSX2；自己的 UDP Socket 绑定 `127.0.0.1:9314`，向本地 frpc `127.0.0.1:9313` 发送封装的应用报文。
+
+`proxies.natTraversal.bindPort = 39999` 使境内 XTCP Proxy 的 **STUN、NAT 打洞、后续 QUIC 共用同一个保持打开的 UDP Socket**（绑定 `0.0.0.0:39999`）。未设置或设置为 `0` 时仍使用系统分配的随机 UDP 端口。只能配置在 `[proxies.natTraversal]`，不是 `[visitors.natTraversal]`，也不是 QUIC DATAGRAM 的 `9313` / `9314` 应用端口。
+
+如果使用路由器端口映射，必须为 **UDP 39999 → 境内 Windows 的 LAN IP:39999** 配置转发，并允许 Windows 防火墙入站 UDP 39999。公网 STUN 探测地址中的端口还取决于路由器/上游 NAT：**指定本地端口不能保证外部端口同样为 39999**。检查 STUN 日志 `addresses` 中的映射端口和 `XTCP NAT using fixed local UDP port 39999`；若外部端口仍被改写，需要检查路由器 NAT 和上游 CGNAT。一个端口同一时刻只能供一个 XTCP Proxy 打洞使用，配置冲突会明确报错，不会悄悄回退随机端口。
 
 ## 境外 frpc：XTCP Visitor，强制隐藏原始打洞地址
 
