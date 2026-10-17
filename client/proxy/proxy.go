@@ -250,7 +250,12 @@ func (pxy *BaseProxy) HandleTCPWorkConnection(workConn net.Conn, m *msg.StartWor
 		}
 	}
 
-	_, _, errs := libio.Join(localConn, remote)
+	var errs []error
+	if baseCfg.Type == "xtcp" && !baseCfg.Transport.UseEncryption && !baseCfg.Transport.UseCompression {
+		_, _, errs = netpkg.JoinHalfClose(localConn, remote)
+	} else {
+		_, _, errs = libio.Join(localConn, remote)
+	}
 	xl.Debugf("join connections closed")
 	if len(errs) > 0 {
 		xl.Tracef("join connections errors: %v", errs)

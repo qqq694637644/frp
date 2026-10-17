@@ -32,7 +32,7 @@ peerAddr = "127.0.0.1:9314"
 bindPort = 39999
 ```
 
-境内 Python SOCKS5 在 TCP `127.0.0.1:9312` 接收 RSX2；自己的 UDP Socket 绑定 `127.0.0.1:9314`，向本地 frpc `127.0.0.1:9313` 发送封装的应用报文。
+境内 Python SOCKS5 在 TCP `127.0.0.1:9312` 接收 RSX3（默认）或显式兼容 RSX2；自己的 UDP Socket 绑定 `127.0.0.1:9314`，向本地 frpc `127.0.0.1:9313` 发送封装的应用报文。
 
 `proxies.natTraversal.bindPort = 39999` 使境内 XTCP Proxy 的 **STUN、NAT 打洞、后续 QUIC 共用同一个保持打开的 UDP Socket**（绑定 `0.0.0.0:39999`）。未设置或设置为 `0` 时仍使用系统分配的随机 UDP 端口。只能配置在 `[proxies.natTraversal]`，不是 `[visitors.natTraversal]`，也不是 QUIC DATAGRAM 的 `9313` / `9314` 应用端口。
 
@@ -109,7 +109,19 @@ XTCP WARP NAT diagnostic: sid=... role=receiver mode=2 result=failed elapsed=38s
 
 应用层 RSX2 报文：`4-byte session ID (big endian) + RFC1928 SOCKS5 UDP packet`。**上限 1100 字节（包括会话 ID）**，超长直接丢弃、不提供任意 UDP/HTTP3 初始 QUIC 报文支持；HTTP/3 1200 字节 QUIC Initial 通常无法穿过当前应用 UDP 限额。Chromium/Chrome 通过普通 SOCKS5 代理时只代理 TCP，不会直接使用 SOCKS5 UDP ASSOCIATE。
 
-TCP/RSX2 控制流使用每个 SOCKS5 会话独立的 32 帧窗口，接收端完成本地 Socket 写入后按最多 8 帧批量发送 WINDOW 额度，减少控制帧频率和视频突发期间慢客户端队列满立即断流的风险。
+TCP/RSX2 控制流使用每个 SOCKS5 会话独立的 32 帧窗口，接收端完成本地 Socket 写入后按最多 8 帧批量发送 WINDOW 额度，减少控制帧频率和视频突发期间慢客户端队列满立即断流的风险。新版 Go / Python RSX2 sender 采用控制优先、按会话轮询和有界缓冲，并记录 WINDOW/锁等待、慢写和 `drain()` 等指标。
+
+### RSX3 高吞吐升级（参考 Hysteria 2 的每 TCP QUIC Stream）
+
+RSX3 是新的 Go/Python Agent 应用层协议，frps 无需更新、XTCP 协商结构不变。境外 Go Agent 为每条 SOCKS5 TCP CONNECT 新建一个到**本地** frpc XTCP Visitor 的 TCP 连接，这条连接自动映射到同一条 P2P QUIC Connection 的**独立双向 Stream**。短小的 RSX3 Control Stream 只处理会话 OPEN/CANCEL/UDP 事务；QUIC DATAGRAM 仍负责应用层 UDP，不通过 TCP 复用。数据 Stream 使用 Control Epoch + SID + 单次随机 nonce 的 HMAC 验证，拒绝其他会话伪造/重复关联；Go 目标建连仍**只能**经过 WARP SOCKS5。
+
+因为客户端可能 `CloseWrite()` 后继续读取响应，XTCP 原本 `libio.Join` 在任一方向 EOF 时关闭两个 socket 的行为会导致响应被截断。此 fork 为**非额外加密/压缩**的 XTCP 原生 QUIC/TCP 传输实现了双向 Half-Close（`CloseWrite` 发送 FIN 而不取消 QUIC 读取方向），其他类型代理保持旧行为。RSX3 不需要再启用额外的 frpc 传输加密/压缩：QUIC 自身已经通过 TLS 加密。
+
+frpc 对 QUIC 接收窗口设定 8 MiB Stream、20 MiB Connection 上限，并使用保守基础 UDP MTU，降低 SOCKS5/WARP 额外封装下的大包黑洞风险。**这些设置不能解决 WARP 链路本身的 RTT/拥塞问题**，应通过后续 qlog 实际测量。
+
+quic-go 原生 qlog：在境内外 frpc 启动前设置 `QLOGDIR` 环境变量为仅管理员可读目录，重启并执行流量测试，QUIC 关闭后可看到 `*.sqlog`（JSON-seq，包含 RTT、重传、packet loss、拥塞窗口和恢复事件）。例如 VPS：`install -d -m 700 /root/frpc-qlog`，再在 x-ui 实际启动环境里设置 `QLOGDIR=/root/frpc-qlog`；仅在 shell 中 export 不能自动更改已运行的 systemd 服务环境。qlog 不应随意对外分享，它包含连接时序和目标路径元数据。
+
+部署 RSX3 时需**同时**更新境内 Python `--protocol rsx3`、x-ui Go Exit Agent 选择 `RSX3`，以及最新版两端 frpc。RSX2 只能通过两端显式选择兼容模式启用，版本不匹配时拒绝认证，不会隐式降级。详见 `nat_node/RSX3.md`。
 
 ## 验证
 

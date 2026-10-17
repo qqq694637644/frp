@@ -242,6 +242,13 @@ func (conn *wrapQuicStream) Close() error {
 	return conn.Stream.Close()
 }
 
+// CloseWrite half-closes only the QUIC send direction (sends FIN), leaving
+// the receive direction active. RSX3 data streams require request EOF and
+// subsequent response bytes on the SAME independent QUIC stream.
+func (conn *wrapQuicStream) CloseWrite() error {
+	return conn.Stream.Close()
+}
+
 func NewCryptoReadWriter(rw io.ReadWriter, key []byte) (io.ReadWriter, error) {
 	encReader := libcrypto.NewReader(rw, key)
 	encWriter, err := libcrypto.NewWriter(rw, key)

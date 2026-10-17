@@ -24,6 +24,7 @@ import (
 
 	fmux "github.com/fatedier/yamux"
 	"github.com/quic-go/quic-go"
+	"github.com/quic-go/quic-go/qlog"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/msg"
@@ -200,10 +201,16 @@ func (pxy *XTCPProxy) listenByQUIC(listenConn net.PacketConn, _ *net.UDPAddr, st
 	tlsConfig.NextProtos = []string{"frp"}
 	quicListener, err := quic.Listen(listenConn, tlsConfig,
 		&quic.Config{
-			MaxIdleTimeout:     time.Duration(pxy.clientCfg.Transport.QUIC.MaxIdleTimeout) * time.Second,
-			MaxIncomingStreams: int64(pxy.clientCfg.Transport.QUIC.MaxIncomingStreams),
-			KeepAlivePeriod:    time.Duration(pxy.clientCfg.Transport.QUIC.KeepalivePeriod) * time.Second,
-			EnableDatagrams:    pxy.cfg.Datagram != nil,
+			MaxIdleTimeout:                 time.Duration(pxy.clientCfg.Transport.QUIC.MaxIdleTimeout) * time.Second,
+			MaxIncomingStreams:             int64(pxy.clientCfg.Transport.QUIC.MaxIncomingStreams),
+			KeepAlivePeriod:                time.Duration(pxy.clientCfg.Transport.QUIC.KeepalivePeriod) * time.Second,
+			EnableDatagrams:                pxy.cfg.Datagram != nil,
+			DisablePathMTUDiscovery:        true,
+			InitialStreamReceiveWindow:     8 * 1024 * 1024,
+			MaxStreamReceiveWindow:         8 * 1024 * 1024,
+			InitialConnectionReceiveWindow: 20 * 1024 * 1024,
+			MaxConnectionReceiveWindow:     20 * 1024 * 1024,
+			Tracer:                         qlog.DefaultConnectionTracer,
 		},
 	)
 	if err != nil {
