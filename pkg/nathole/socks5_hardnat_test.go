@@ -35,21 +35,17 @@ func startFakeNATHoleSOCKS5(t *testing.T, limit int32) *fakeNATHoleSOCKS5 {
 		t.Fatal(err)
 	}
 	p := &fakeNATHoleSOCKS5{listener: listener, limit: limit}
-	p.wg.Add(1)
-	go func() {
-		defer p.wg.Done()
+	p.wg.Go(func() {
 		for {
 			c, err := listener.Accept()
 			if err != nil {
 				return
 			}
-			p.wg.Add(1)
-			go func() {
-				defer p.wg.Done()
+			p.wg.Go(func() {
 				p.handle(c)
-			}()
+			})
 		}
-	}()
+	})
 	t.Cleanup(func() {
 		_ = p.listener.Close()
 		p.wg.Wait()
