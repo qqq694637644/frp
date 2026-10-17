@@ -23,7 +23,7 @@ on:
       prerelease:
         description: 'Mark as prerelease'
         type: boolean
-        default: true
+        default: false
 
 permissions:
   contents: write
