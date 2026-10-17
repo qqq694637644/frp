@@ -46,8 +46,8 @@ peerAddr = "127.0.0.1:9314"
 	require.NotNil(t, proxy.NatTraversal)
 	require.Equal(t, 39999, proxy.NatTraversal.BindPort)
 
-	copy := proxy.Clone().(*v1.XTCPProxyConfig)
-	copy.NatTraversal.BindPort = 30000
+	clonedProxy := proxy.Clone().(*v1.XTCPProxyConfig)
+	clonedProxy.NatTraversal.BindPort = 30000
 	require.Equal(t, 39999, proxy.NatTraversal.BindPort, "fixed port must remain frpc-local across clone")
 
 	// Local BindPort is never included in the NewProxy message sent to frps.
