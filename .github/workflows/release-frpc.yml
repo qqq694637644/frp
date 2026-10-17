@@ -96,17 +96,13 @@ jobs:
           build() {
             local os="$1" arch="amd64" suffix=""
             if [[ "$os" == windows ]]; then suffix=".exe"; fi
-            local folder="frpc_${RELEASE_TAG}_${os}_${arch}"
-            mkdir -p "dist/$folder"
+            local binary="frpc_${RELEASE_TAG}_${os}_${arch}$suffix"
             CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -tags 'frpc,noweb' \
-              -ldflags "-s -w" -o "dist/$folder/frpc$suffix" ./cmd/frpc
-            cp LICENSE "dist/$folder/LICENSE"
-            tar -C dist -czf "dist/$folder.tar.gz" "$folder"
-            rm -rf "dist/$folder"
+              -ldflags "-s -w" -o "dist/$binary" ./cmd/frpc
           }
           if [[ "$PLATFORM" == Linux || "$PLATFORM" == Both ]]; then build linux; fi
           if [[ "$PLATFORM" == Windows || "$PLATFORM" == Both ]]; then build windows; fi
-          (cd dist && sha256sum *.tar.gz > SHA256SUMS.txt)
+          (cd dist && sha256sum frpc_* > SHA256SUMS.txt)
           ls -lh dist/
 
       - name: Publish release
@@ -119,6 +115,6 @@ jobs:
           prerelease: ${{ inputs.prerelease }}
           generate_release_notes: true
           files: |
-            dist/*.tar.gz
+            dist/frpc_*
             dist/SHA256SUMS.txt
           fail_on_unmatched_files: true
