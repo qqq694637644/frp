@@ -6,8 +6,9 @@ import (
 	"net"
 	"time"
 
-	"github.com/fatedier/frp/pkg/transport/socks5udp"
 	"github.com/fatedier/golib/net/stun"
+
+	"github.com/fatedier/frp/pkg/transport/socks5udp"
 )
 
 // prepareThroughSOCKS5 uses the *same* SOCKS5 UDP association for STUN,
@@ -78,7 +79,7 @@ func discoverSTUNOnPacketConn(conn PacketConn, server string) (stun.BindingRespo
 	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		return stun.BindingResponse{}, err
 	}
-	defer conn.SetReadDeadline(time.Time{})
+	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 	if _, err := conn.WriteToUDP(packet, addr); err != nil {
 		return stun.BindingResponse{}, err
 	}
