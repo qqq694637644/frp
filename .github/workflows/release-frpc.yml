@@ -3,11 +3,6 @@ name: Release frpc (Windows / Linux)
 on:
   workflow_dispatch:
     inputs:
-      source_branch:
-        description: 'Branch to build (must exist in this repository)'
-        required: true
-        type: string
-        default: 'gpt/xtcp-quic-datagram'
       version:
         description: 'Release version/tag (example: v0.69.0-custom.1)'
         required: true
@@ -39,38 +34,34 @@ concurrency:
 
 jobs:
   release:
-    name: Build ${{ inputs.platform }} from ${{ inputs.source_branch }}
+    name: Build ${{ inputs.platform }} from ${{ github.ref_name }}
     runs-on: ubuntu-latest
     steps:
       - name: Validate release inputs
         env:
-          SOURCE_BRANCH: ${{ inputs.source_branch }}
           VERSION: ${{ inputs.version }}
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$SOURCE_BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || { echo 'Invalid branch'; exit 1; }
-          [[ "$SOURCE_BRANCH" != *..* && "$SOURCE_BRANCH" != */ && "$SOURCE_BRANCH" != *///* ]] || { echo 'Invalid branch'; exit 1; }
           [[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([-._+][A-Za-z0-9._-]+)?$ ]] || { echo 'Use a version such as v0.69.0-custom.1'; exit 1; }
           echo "RELEASE_TAG=$VERSION" >> "$GITHUB_ENV"
 
       - name: Checkout selected branch
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.source_branch }}
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Confirm branch and release tag safety
         env:
           GH_TOKEN: ${{ github.token }}
-          SOURCE_BRANCH: ${{ inputs.source_branch }}
+          SOURCE_SHA: ${{ github.sha }}
         shell: bash
         run: |
           set -euo pipefail
-          git fetch --no-tags origin "+refs/heads/$SOURCE_BRANCH:refs/remotes/origin/$SOURCE_BRANCH"
-          BRANCH_SHA="$(git rev-parse "refs/remotes/origin/$SOURCE_BRANCH^{commit}")"
-          test "$(git rev-parse HEAD)" = "$BRANCH_SHA" || { echo 'Branch moved during checkout; retry release'; exit 1; }
-          echo "SOURCE_SHA=$BRANCH_SHA" >> "$GITHUB_ENV"
+          test "$GITHUB_REF_TYPE" = "branch" || { echo 'Select a branch using Use workflow from'; exit 1; }
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA" || { echo 'Checked out commit does not match the selected workflow run'; exit 1; }
+          echo "SOURCE_SHA=$SOURCE_SHA" >> "$GITHUB_ENV"
           if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
             echo "Tag $RELEASE_TAG already exists. Refusing to overwrite an existing release tag."
             exit 1
