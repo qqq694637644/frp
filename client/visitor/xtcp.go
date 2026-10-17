@@ -316,11 +316,15 @@ func (sv *XTCPVisitor) makeNatHole() {
 	listenConn = newListenConn
 	xl.Infof("establishing nat hole connection successful, sid [%s], remoteAddr [%s]", natHoleRespMsg.Sid, raddr)
 
+	xl.Infof("XTCP tunnel handshake start: sid [%s], protocol [%s], remoteAddr [%s]",
+		natHoleRespMsg.Sid, natHoleRespMsg.Protocol, raddr)
 	if err := sv.session.Init(listenConn, raddr); err != nil {
 		listenConn.Close()
 		xl.Warnf("init tunnel session error: %v", err)
 		return
 	}
+	xl.Infof("XTCP tunnel handshake ready: sid [%s], protocol [%s], remoteAddr [%s]",
+		natHoleRespMsg.Sid, natHoleRespMsg.Protocol, raddr)
 }
 
 type TunnelSession interface {

@@ -22,6 +22,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/fatedier/golib/pool"
@@ -99,6 +100,16 @@ type PrepareResult struct {
 	ListenConn    PacketConn
 	NatType       string
 	Behavior      string
+}
+
+// Each diagnostic counter is shared by the 257 concurrent receive workers.
+// Counts describe successful local SOCKS5 I/O, not delivery across WARP.
+type warpNATHoleDiagnostics struct {
+	localWriteErrors atomic.Uint64
+	decodeErrors     atomic.Uint64
+	wrongSID         atomic.Uint64
+	matchingSID      atomic.Uint64
+	ignoredProbe     atomic.Uint64
 }
 
 // PreCheck is used to check if the proxy is ready for penetration.
@@ -212,8 +223,16 @@ func ExchangeInfo(
 // MakeHole is used to make a NAT hole between client and visitor.
 func MakeHole(ctx context.Context, listenConn PacketConn, m *msg.NatHoleResp, key []byte) (winningConn PacketConn, remoteAddr *net.UDPAddr, makeErr error) {
 	xl := xlog.FromContextSafe(ctx)
+	proxyConn, throughSOCKS5 := listenConn.(*socks5udp.Conn)
+	var diag *warpNATHoleDiagnostics
+	var before socks5udp.TrafficStats
+	started := time.Now()
+	if throughSOCKS5 {
+		diag = &warpNATHoleDiagnostics{}
+		before = proxyConn.TrafficStats()
+	}
 	if _, native := listenConn.(*net.UDPConn); !native {
-		if _, proxied := listenConn.(*socks5udp.Conn); !proxied {
+		if !throughSOCKS5 {
 			return nil, nil, fmt.Errorf("unsupported XTCP NAT socket: refusing native UDP fallback")
 		}
 		if m.DetectBehavior.ListenRandomPorts > maxSOCKS5NATHoleAssociations {
@@ -223,10 +242,45 @@ func MakeHole(ctx context.Context, listenConn PacketConn, m *msg.NatHoleResp, ke
 	}
 	transactionID := NewTransactionID()
 	sendToRangePortsFunc := func(conn PacketConn, addr string) error {
-		return sendSidMessage(ctx, conn, m.Sid, transactionID, addr, key, m.DetectBehavior.TTL)
+		err := sendSidMessage(ctx, conn, m.Sid, transactionID, addr, key, m.DetectBehavior.TTL)
+		if err != nil && diag != nil {
+			diag.localWriteErrors.Add(1)
+		}
+		return err
 	}
 
 	listenConns := []PacketConn{listenConn}
+	if throughSOCKS5 {
+		defer func() {
+			var localWrites, relayReads, rejectedFrames uint64
+			for i, conn := range listenConns {
+				proxied, ok := conn.(*socks5udp.Conn)
+				if !ok {
+					continue
+				}
+				stats := proxied.TrafficStats()
+				if i == 0 {
+					// Ignore previous STUN discovery traffic on the original
+					// SOCKS5 association.
+					stats.LocalRelayWrites -= before.LocalRelayWrites
+					stats.LocalRelayReads -= before.LocalRelayReads
+					stats.DroppedFrames -= before.DroppedFrames
+				}
+				localWrites += stats.LocalRelayWrites
+				relayReads += stats.LocalRelayReads
+				rejectedFrames += stats.DroppedFrames
+			}
+			result := "success"
+			if makeErr != nil {
+				result = "failed"
+			}
+			xl.Infof("XTCP WARP NAT diagnostic: sid=%s role=%s mode=%d result=%s elapsed=%s associations=%d localRelayWrites=%d localWriteErrors=%d relayReplies=%d discardedRelayFrames=%d decodedErrors=%d wrongSID=%d matchingSID=%d ignoredSenderProbes=%d",
+				m.Sid, m.DetectBehavior.Role, m.DetectBehavior.Mode, result, time.Since(started).Round(time.Millisecond),
+				len(listenConns), localWrites, diag.localWriteErrors.Load(), relayReads, rejectedFrames,
+				diag.decodeErrors.Load(), diag.wrongSID.Load(),
+				diag.matchingSID.Load(), diag.ignoredProbe.Load())
+		}()
+	}
 	// The caller retains only the winning association for the QUIC tunnel.
 	// In particular, close *all* losing SOCKS5 TCP+UDP associations as soon as
 	// hole punching finishes, rather than leaving 256 WARP sessions waiting
@@ -253,7 +307,6 @@ func MakeHole(ctx context.Context, listenConn PacketConn, m *msg.NatHoleResp, ke
 		}
 
 		if m.DetectBehavior.ListenRandomPorts > 0 {
-			proxied, throughSOCKS5 := listenConn.(*socks5udp.Conn)
 			for i := 0; i < m.DetectBehavior.ListenRandomPorts; i++ {
 				var tmpConn PacketConn
 				var err error
@@ -262,7 +315,7 @@ func MakeHole(ctx context.Context, listenConn PacketConn, m *msg.NatHoleResp, ke
 					// The proxied Visitor instead opens 256 distinct *loopback*
 					// WARP SOCKS5 UDP ASSOCIATE sessions. No packet is sent to
 					// the public Internet from an unproxied VPS UDP socket.
-					tmpConn, err = proxied.NewAssociation()
+					tmpConn, err = proxyConn.NewAssociation()
 				} else {
 					tmpConn, err = net.ListenUDP("udp4", nil)
 				}
@@ -286,7 +339,7 @@ func MakeHole(ctx context.Context, listenConn PacketConn, m *msg.NatHoleResp, ke
 	detectAddrs = slices.Compact(detectAddrs)
 	for _, detectAddr := range detectAddrs {
 		for _, conn := range listenConns {
-			if err := sendSidMessage(ctx, conn, m.Sid, transactionID, detectAddr, key, m.DetectBehavior.TTL); err != nil {
+			if err := sendToRangePortsFunc(conn, detectAddr); err != nil {
 				xl.Tracef("send sid message from %s to %s error: %v", conn.LocalAddr(), detectAddr, err)
 			}
 		}
@@ -310,7 +363,7 @@ func MakeHole(ctx context.Context, listenConn PacketConn, m *msg.NatHoleResp, ke
 	}
 
 	if len(listenConns) == 1 {
-		raddr, err := waitDetectMessage(ctx, listenConns[0], m.Sid, key, timeout, m.DetectBehavior.Role)
+		raddr, err := waitDetectMessage(ctx, listenConns[0], m.Sid, key, timeout, m.DetectBehavior.Role, diag)
 		if err != nil {
 			return nil, nil, fmt.Errorf("wait detect message error: %v", err)
 		}
@@ -327,7 +380,7 @@ func MakeHole(ctx context.Context, listenConn PacketConn, m *msg.NatHoleResp, ke
 	resultCh := make(chan result, 1)
 	for _, conn := range listenConns {
 		go func(lConn PacketConn) {
-			addr, err := waitDetectMessage(ctx, lConn, m.Sid, key, timeout, m.DetectBehavior.Role)
+			addr, err := waitDetectMessage(ctx, lConn, m.Sid, key, timeout, m.DetectBehavior.Role, diag)
 			if err != nil {
 				lConn.Close()
 				return
@@ -352,7 +405,7 @@ func MakeHole(ctx context.Context, listenConn PacketConn, m *msg.NatHoleResp, ke
 
 func waitDetectMessage(
 	ctx context.Context, conn PacketConn, sid string, key []byte,
-	timeout time.Duration, role string,
+	timeout time.Duration, role string, diag *warpNATHoleDiagnostics,
 ) (*net.UDPAddr, error) {
 	xl := xlog.FromContextSafe(ctx)
 	for {
@@ -368,19 +421,31 @@ func waitDetectMessage(
 		var m msg.NatHoleSid
 		if err := DecodeMessageInto(buf[:n], key, &m); err != nil {
 			pool.PutBuf(buf)
+			if diag != nil {
+				diag.decodeErrors.Add(1)
+			}
 			xl.Warnf("decode sid message error: %v", err)
 			continue
 		}
 		pool.PutBuf(buf)
 
 		if m.Sid != sid {
+			if diag != nil {
+				diag.wrongSID.Add(1)
+			}
 			xl.Warnf("get sid message with wrong sid: %s, expect: %s", m.Sid, sid)
 			continue
+		}
+		if diag != nil {
+			diag.matchingSID.Add(1)
 		}
 
 		if !m.Response {
 			// only wait for response messages if we are a sender
 			if role == DetectRoleSender {
+				if diag != nil {
+					diag.ignoredProbe.Add(1)
+				}
 				continue
 			}
 

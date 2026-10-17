@@ -98,6 +98,11 @@ func TestSOCKS5UDPAssociationOnlyUsesLoopbackRelay(t *testing.T) {
 	}
 	reply := append([]byte(nil), want...)
 	copy(reply[10:], []byte("YES"))
+	// A malformed relay frame must never be passed to NAT/QUIC, but should
+	// appear in the diagnostic counter.
+	if _, err = relay.WriteToUDP([]byte{0, 0, 1, 1, 127, 0, 0, 1, 0, 53, 'x'}, source); err != nil {
+		t.Fatal(err)
+	}
 	if _, err = relay.WriteToUDP(reply, source); err != nil {
 		t.Fatal(err)
 	}
@@ -111,6 +116,10 @@ func TestSOCKS5UDPAssociationOnlyUsesLoopbackRelay(t *testing.T) {
 	}
 	if addr.String() != remote.String() || string(got[:n]) != "YES" {
 		t.Fatalf("wrong SOCKS5 relay result: %s %q", addr, got[:n])
+	}
+	stats := conn.TrafficStats()
+	if stats.LocalRelayWrites != 1 || stats.LocalRelayReads != 1 || stats.DroppedFrames != 1 {
+		t.Fatalf("SOCKS5 relay traffic counters failed: %+v", stats)
 	}
 	if _, err = conn.WriteTo([]byte("x"), &net.TCPAddr{}); err == nil {
 		t.Fatal("accepted direct non-UDP socket destination")

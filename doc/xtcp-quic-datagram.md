@@ -70,11 +70,29 @@ udpProxyURL = "socks5://127.0.0.1:40000"
 - `natTraversal.udpProxyURL` 是本 fork 增加的字段，强制 **STUN、XTCP NAT 打洞及 P2P QUIC** 走同一个 SOCKS5 UDP ASSOCIATE。**仅填 `transport.proxyURL` 不能隐藏原生 UDP 打洞出口。**
 - 两个代理字段必须指向相同的本机 SOCKS5 端点，且只允许字面 IPv4 回环地址 `127.0.0.1`；非回环的 UDP 中继地址会拒绝。WARP 不可用时不创建公网原生 UDP 连接。
 - 禁止 XTCP `fallbackTo`；辅助候选本机 IP 自动关闭。默认 `wireProtocol="v1"`，与官方 frps 0.69.0 完整本地测试通过。
-- 可用 `socks5://USERNAME:PASSWORD@127.0.0.1:40000` 指定账号认证，注意该文件权限（建议仅运行用户可读）。x-ui Web 模板不会自动带出储存的 WARP 密码。
+- 可用 `socks5://USERNAME:PASSWORD@127.0.0.1:40000` 指定账号认证，注意该文件权限（建议仅运行用户可读）。单用户 x-ui Web 页面会回显已保存的 WARP 密码，必须保护面板登录与 HTTPS。
 
 **HardNAT/Mode 2 打洞支持：** 官方 frps 0.69 对 HardNAT Visitor 可能下发 `ListenRandomPorts: 256`，要求接收端打开 256 个额外 UDP 端口。自定义 frpc 将这些端口分别映射到**独立的、本机回环 WARP SOCKS5 UDP ASSOCIATE**，不再因要求额外端口而拒绝，也绝不回退原生公网 UDP。限制最多 256 条关联；如果 WARP 不允许创建所需关联就报错并释放已创建的关联。成功打洞后，立即关闭其余临时关联，仅保留真正承载 QUIC 的关联。
 
 **重要限制：** SOCKS5 UDP 中继不能像原生 UDP Socket 一样设置数据报 IP TTL，因此收到 frps 的非零 TTL 探测提示时仍然通过 SOCKS5 发送，但无法应用该 TTL 优化。**256 条关联只是模拟本地多个 UDP 端口，不保证 WARP NAT 的外部映射端口足够分散或允许对端入站。** 日志中出现 `HardNAT`、`ListenRandomPorts:256`，不代表隧道一定能建立；必须看到 `establishing nat hole connection successful` 和实际传输成功才能视为可用。
+
+### 诊断真实 WARP HardNAT 失败
+
+在境外运行**含诊断日志的定制 frpc**，使用 `log.level = "info"` 即可查看：
+
+```text
+XTCP WARP NAT diagnostic: sid=... role=receiver mode=2 result=failed elapsed=38s associations=257 localRelayWrites=257 localWriteErrors=0 relayReplies=0 discardedRelayFrames=0 decodedErrors=0 wrongSID=0 matchingSID=0 ignoredSenderProbes=0
+```
+
+- `localRelayWrites`：仅说明加了 SOCKS5 UDP 封装的数据已经成功写到**本机回环 WARP 中继**；**不是** WARP 已发送公网、对端已收到的证据。包括多关联和发送探测消息，不包括配置外的原生 UDP。
+- `localWriteErrors`：本机回环 SOCKS5 UDP 发送失败次数；这里大于 0 首先检查代理状态和关联生命周期。
+- `relayReplies`：所有 SOCKS5 关联收到并接受了**来自指定本机 relay** 的 UDP 封装帧数量。始终为 0 且 `localRelayWrites>0`，应检查 WARP 公网映射、入站 UDP 限制和境内端是否向该映射发出探测，不应继续盲目改 STUN/凭据。
+- `discardedRelayFrames`：来源/端口或 SOCKS5 UDP 包头不符而丢弃的帧；这意味着本机收到了 UDP，却无法确认来自指定 relay。
+- `decodedErrors`、`wrongSID`：已收到 UDP，但是 NAT 探测包解码/会话匹配失败；此时再核对两端 XTCP secretKey 与 SID。
+- `matchingSID`：完整通过解码和 SID 校验的探测包计数；接收到 SID 并不必然意味着后续 QUIC 握手成功。
+- `ignoredSenderProbes`：本端为 sender 时按打洞协议忽略的未标记为 response 的探测包数量。
+
+统计只覆盖当次 MakeHole 正在使用的 UDP 关联。随机目标端口发送是异步的，计数为**结束时快照**。这些日志不会打印 SOCKS5 Token、密码或业务负载。打洞成功后还应出现 `XTCP tunnel handshake start`、`XTCP tunnel handshake ready`；如果 `init tunnel session error: dial quic error: ...` 则说明 SID UDP 探测已成功但 QUIC 未完成。要确认业务可用，还需要境内 Python `exit agent connected` 和实际的 TCP/UDP SOCKS5 请求。
 
 建议填写 **数字形式 STUN IP:端口**；使用 STUN 域名会在主机进行 DNS 解析，这段 DNS 不属于 SOCKS5 UDP Relay，可能暴露原始网络 DNS 请求。业务域名则由目标 SOCKS5 代理处理，不在本地解析。
 

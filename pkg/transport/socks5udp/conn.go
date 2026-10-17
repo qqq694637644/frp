@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,6 +25,28 @@ type Conn struct {
 	control  *net.TCPConn
 	relay    *net.UDPAddr
 	once     sync.Once
+	// NAT debugging counters describe traffic only as far as the local
+	// SOCKS5 relay. A successful local UDP write does NOT prove that WARP
+	// forwarded the datagram or that the remote peer received it.
+	localRelayWrites atomic.Uint64
+	localRelayReads  atomic.Uint64
+	droppedFrames    atomic.Uint64
+}
+
+// TrafficStats is an atomic snapshot of the local SOCKS5 UDP transport.
+// It intentionally never captures credentials or UDP payloads.
+type TrafficStats struct {
+	LocalRelayWrites uint64
+	LocalRelayReads  uint64
+	DroppedFrames    uint64
+}
+
+func (c *Conn) TrafficStats() TrafficStats {
+	return TrafficStats{
+		LocalRelayWrites: c.localRelayWrites.Load(),
+		LocalRelayReads:  c.localRelayReads.Load(),
+		DroppedFrames:    c.droppedFrames.Load(),
+	}
 }
 
 func ValidateURL(raw string) error {
@@ -218,6 +241,7 @@ func (c *Conn) WriteToUDP(data []byte, peer *net.UDPAddr) (int, error) {
 	if n != len(frame) {
 		return 0, io.ErrShortWrite
 	}
+	c.localRelayWrites.Add(1)
 	return len(data), nil
 }
 
@@ -240,8 +264,10 @@ func (c *Conn) ReadFromUDP(dst []byte) (int, *net.UDPAddr, error) {
 		}
 		if !from.IP.Equal(c.relay.IP) || from.Port != c.relay.Port || n < 10 ||
 			buf[0] != 0 || buf[1] != 0 || buf[2] != 0 || buf[3] != 1 {
+			c.droppedFrames.Add(1)
 			continue
 		}
+		c.localRelayReads.Add(1)
 		peer := &net.UDPAddr{
 			IP:   append(net.IP(nil), buf[4:8]...),
 			Port: int(binary.BigEndian.Uint16(buf[8:10])),
