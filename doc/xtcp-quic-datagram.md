@@ -33,7 +33,7 @@ peerAddr = "127.0.0.1:9314"
 
 ## 境外 frpc：XTCP Visitor，强制隐藏原始打洞地址
 
-使用 x-ui 面板的 **反向 SOCKS5 / WARP → 境外 frpc 默认配置** 一键生成。以下示例必须替换第三方 frps IP、token、XTCP 密钥、STUN 服务器地址、WARP SOCKS5 端口：
+可通过 x-ui 面板的 **反向 SOCKS5 / WARP** 自动生成并管理自定义 frpc。以下示例必须替换第三方 frps IP、token、XTCP 密钥、STUN 服务器地址、WARP SOCKS5 端口：
 
 ```toml
 serverAddr = "REPLACE_WITH_FRPS_IP"
@@ -72,7 +72,9 @@ udpProxyURL = "socks5://127.0.0.1:40000"
 - 禁止 XTCP `fallbackTo`；辅助候选本机 IP 自动关闭。默认 `wireProtocol="v1"`，与官方 frps 0.69.0 完整本地测试通过。
 - 可用 `socks5://USERNAME:PASSWORD@127.0.0.1:40000` 指定账号认证，注意该文件权限（建议仅运行用户可读）。x-ui Web 模板不会自动带出储存的 WARP 密码。
 
-**重要限制：** SOCKS5 UDP 中继不能像原生 UDP Socket 一样设置发送数据报的 IP TTL，因此收到 frps 的非零 TTL 探测提示时会保留经 SOCKS5 发送、忽略该提示；如果 frps 要求多临时 UDP 监听 Socket（复杂 NAT），会直接失败，**不会回退 VPS 原始网络**。某些 WARP SOCKS5 NAT 行为也可能根本无法被对端主动打洞，这是服务端不改时无法单凭代码消除的限制。与真实 WARP+/中国 NAT 环境的成功率仍待实测。
+**HardNAT/Mode 2 打洞支持：** 官方 frps 0.69 对 HardNAT Visitor 可能下发 `ListenRandomPorts: 256`，要求接收端打开 256 个额外 UDP 端口。自定义 frpc 将这些端口分别映射到**独立的、本机回环 WARP SOCKS5 UDP ASSOCIATE**，不再因要求额外端口而拒绝，也绝不回退原生公网 UDP。限制最多 256 条关联；如果 WARP 不允许创建所需关联就报错并释放已创建的关联。成功打洞后，立即关闭其余临时关联，仅保留真正承载 QUIC 的关联。
+
+**重要限制：** SOCKS5 UDP 中继不能像原生 UDP Socket 一样设置数据报 IP TTL，因此收到 frps 的非零 TTL 探测提示时仍然通过 SOCKS5 发送，但无法应用该 TTL 优化。**256 条关联只是模拟本地多个 UDP 端口，不保证 WARP NAT 的外部映射端口足够分散或允许对端入站。** 日志中出现 `HardNAT`、`ListenRandomPorts:256`，不代表隧道一定能建立；必须看到 `establishing nat hole connection successful` 和实际传输成功才能视为可用。
 
 建议填写 **数字形式 STUN IP:端口**；使用 STUN 域名会在主机进行 DNS 解析，这段 DNS 不属于 SOCKS5 UDP Relay，可能暴露原始网络 DNS 请求。业务域名则由目标 SOCKS5 代理处理，不在本地解析。
 
@@ -92,7 +94,7 @@ go build -tags 'frpc,noweb' -o frpc ./cmd/frpc
 ./frpc verify -c frpc.toml
 ```
 
-已在本地模拟环境用**官方 frps 0.69.0** 验证强制 SOCKS5 的控制连接和 UDP STUN/XTCP 打洞、P2P TCP/UDP 都正常收发。但线上验收仍应检查三项：
+已在本地模拟环境用**官方 frps 0.69.0** 验证强制 SOCKS5 的控制连接和 UDP STUN/XTCP 打洞、P2P TCP/UDP 都正常收发。另外通过真实 `MakeHole` + 本地模拟 WARP SOCKS5 验证 **Mode 2、TTL=7、256 条关联以及获胜 QUIC 连接的双向 UDP 收发**，并测试代理拒绝关联时清理资源和拒绝创建超过 256 条关联的服务端要求。但线上验收仍应检查三项：
 
 1. 由境内 SOCKS5 发起 TCP 到公网 IP 查询站，确认目标网站看到的是 **WARP IP**，不是 VPS IP；
 2. 观察境内对端收到的 XTCP 候选 IP，确认是 **WARP 映射 IP**；不会发送境外本地辅助 IP；

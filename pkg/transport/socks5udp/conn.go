@@ -19,10 +19,11 @@ import (
 )
 
 type Conn struct {
-	udp     *net.UDPConn
-	control *net.TCPConn
-	relay   *net.UDPAddr
-	once    sync.Once
+	proxyURL string
+	udp      *net.UDPConn
+	control  *net.TCPConn
+	relay    *net.UDPAddr
+	once     sync.Once
 }
 
 func ValidateURL(raw string) error {
@@ -170,7 +171,16 @@ func Dial(raw string) (*Conn, error) {
 	_ = control.SetDeadline(time.Time{})
 	successUDP = true
 	success = true
-	return &Conn{udp: udp, control: control, relay: &net.UDPAddr{IP: addr.To4(), Port: relayPort}}, nil
+	return &Conn{proxyURL: raw, udp: udp, control: control, relay: &net.UDPAddr{IP: addr.To4(), Port: relayPort}}, nil
+}
+
+// NewAssociation opens an independent UDP ASSOCIATE using the exact same
+// loopback SOCKS5 proxy as this connection. An XTCP NAT receiver may need
+// hundreds of separate source ports for hard-NAT hole punching. Each such
+// port must belong to its own SOCKS5 association; opening a native UDP
+// socket would expose the VPS's real source IP.
+func (c *Conn) NewAssociation() (*Conn, error) {
+	return Dial(c.proxyURL)
 }
 
 func writeAll(c net.Conn, data []byte) error {

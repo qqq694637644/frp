@@ -30,6 +30,7 @@ import (
 
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/transport"
+	"github.com/fatedier/frp/pkg/transport/socks5udp"
 	"github.com/fatedier/frp/pkg/util/xlog"
 )
 
@@ -66,6 +67,11 @@ var (
 	DetectMode4        = 4
 	DetectRoleSender   = "sender"
 	DetectRoleReceiver = "receiver"
+
+	// HardNAT mode 2/4 asks the receiver to open 256 additional UDP sockets.
+	// A third-party frps must not be allowed to exhaust local SOCKS5
+	// associations by asking the Visitor to open an arbitrary number.
+	maxSOCKS5NATHoleAssociations = 256
 )
 
 // PrepareOptions defines options for NAT traversal preparation
@@ -204,13 +210,15 @@ func ExchangeInfo(
 }
 
 // MakeHole is used to make a NAT hole between client and visitor.
-func MakeHole(ctx context.Context, listenConn PacketConn, m *msg.NatHoleResp, key []byte) (PacketConn, *net.UDPAddr, error) {
+func MakeHole(ctx context.Context, listenConn PacketConn, m *msg.NatHoleResp, key []byte) (winningConn PacketConn, remoteAddr *net.UDPAddr, makeErr error) {
 	xl := xlog.FromContextSafe(ctx)
 	if _, native := listenConn.(*net.UDPConn); !native {
-		// Native temporary sockets / IP TTL manipulation cannot be tunneled via
-		// SOCKS5. Fail instead of silently leaking the real VPS UDP source IP.
-		if m.DetectBehavior.ListenRandomPorts > 0 {
-			return nil, nil, fmt.Errorf("XTCP NAT detect requests extra native UDP sockets; refusing direct fallback from SOCKS5")
+		if _, proxied := listenConn.(*socks5udp.Conn); !proxied {
+			return nil, nil, fmt.Errorf("unsupported XTCP NAT socket: refusing native UDP fallback")
+		}
+		if m.DetectBehavior.ListenRandomPorts > maxSOCKS5NATHoleAssociations {
+			return nil, nil, fmt.Errorf("XTCP NAT requested %d WARP SOCKS5 UDP associations, limit %d",
+				m.DetectBehavior.ListenRandomPorts, maxSOCKS5NATHoleAssociations)
 		}
 	}
 	transactionID := NewTransactionID()
@@ -219,6 +227,17 @@ func MakeHole(ctx context.Context, listenConn PacketConn, m *msg.NatHoleResp, ke
 	}
 
 	listenConns := []PacketConn{listenConn}
+	// The caller retains only the winning association for the QUIC tunnel.
+	// In particular, close *all* losing SOCKS5 TCP+UDP associations as soon as
+	// hole punching finishes, rather than leaving 256 WARP sessions waiting
+	// until their receive deadlines expire.
+	defer func() {
+		for _, conn := range listenConns {
+			if conn != winningConn {
+				_ = conn.Close()
+			}
+		}
+	}()
 	var detectAddrs []string
 	if m.DetectBehavior.Role == DetectRoleSender {
 		// sender
@@ -234,13 +253,32 @@ func MakeHole(ctx context.Context, listenConn PacketConn, m *msg.NatHoleResp, ke
 		}
 
 		if m.DetectBehavior.ListenRandomPorts > 0 {
+			proxied, throughSOCKS5 := listenConn.(*socks5udp.Conn)
 			for i := 0; i < m.DetectBehavior.ListenRandomPorts; i++ {
-				tmpConn, err := net.ListenUDP("udp4", nil)
+				var tmpConn PacketConn
+				var err error
+				if throughSOCKS5 {
+					// Mode 2 HardNAT normally listens on 256 native UDP ports.
+					// The proxied Visitor instead opens 256 distinct *loopback*
+					// WARP SOCKS5 UDP ASSOCIATE sessions. No packet is sent to
+					// the public Internet from an unproxied VPS UDP socket.
+					tmpConn, err = proxied.NewAssociation()
+				} else {
+					tmpConn, err = net.ListenUDP("udp4", nil)
+				}
 				if err != nil {
+					if throughSOCKS5 {
+						return nil, nil, fmt.Errorf("open WARP SOCKS5 UDP association %d/%d: %w",
+							i+1, m.DetectBehavior.ListenRandomPorts, err)
+					}
 					xl.Warnf("listen random udp addr error: %v", err)
 					continue
 				}
 				listenConns = append(listenConns, tmpConn)
+			}
+			if throughSOCKS5 {
+				xl.Infof("XTCP HardNAT receiver opened %d extra WARP SOCKS5 UDP associations (loopback-only)",
+					len(listenConns)-1)
 			}
 		}
 	}
@@ -283,7 +321,10 @@ func MakeHole(ctx context.Context, listenConn PacketConn, m *msg.NatHoleResp, ke
 		lConn PacketConn
 		raddr *net.UDPAddr
 	}
-	resultCh := make(chan result)
+	// Buffer the first successful response. With 256 associations, a peer
+	// reply may arrive before the main goroutine reaches the select below;
+	// an unbuffered channel would otherwise discard that valid hole.
+	resultCh := make(chan result, 1)
 	for _, conn := range listenConns {
 		go func(lConn PacketConn) {
 			addr, err := waitDetectMessage(ctx, lConn, m.Sid, key, timeout, m.DetectBehavior.Role)
