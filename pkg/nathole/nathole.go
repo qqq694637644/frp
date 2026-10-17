@@ -274,7 +274,10 @@ func MakeHole(ctx context.Context, listenConn PacketConn, m *msg.NatHoleResp, ke
 			if makeErr != nil {
 				result = "failed"
 			}
-			xl.Infof("XTCP WARP NAT diagnostic: sid=%s role=%s mode=%d result=%s elapsed=%s associations=%d localRelayWrites=%d localWriteErrors=%d relayReplies=%d discardedRelayFrames=%d decodedErrors=%d wrongSID=%d matchingSID=%d ignoredSenderProbes=%d",
+			const format = "XTCP WARP NAT diagnostic: sid=%s role=%s mode=%d result=%s elapsed=%s " +
+				"associations=%d localRelayWrites=%d localWriteErrors=%d relayReplies=%d " +
+				"discardedRelayFrames=%d decodedErrors=%d wrongSID=%d matchingSID=%d ignoredSenderProbes=%d"
+			xl.Infof(format,
 				m.Sid, m.DetectBehavior.Role, m.DetectBehavior.Mode, result, time.Since(started).Round(time.Millisecond),
 				len(listenConns), localWrites, diag.localWriteErrors.Load(), relayReads, rejectedFrames,
 				diag.decodeErrors.Load(), diag.wrongSID.Load(),
