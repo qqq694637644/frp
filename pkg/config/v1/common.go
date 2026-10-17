@@ -90,6 +90,10 @@ type NatTraversalConfig struct {
 	// for assisted connections during NAT traversal. When enabled,
 	// only STUN-discovered public addresses will be used.
 	DisableAssistedAddrs bool `json:"disableAssistedAddrs,omitempty"`
+	// UDPProxyURL sends XTCP Visitor STUN, NAT punching and QUIC datagrams
+	// exclusively through a local SOCKS5 UDP ASSOCIATE relay. It is never
+	// forwarded to frps and must not be used without transport.proxyURL.
+	UDPProxyURL string `json:"udpProxyURL,omitempty"`
 }
 
 func (c *NatTraversalConfig) Clone() *NatTraversalConfig {

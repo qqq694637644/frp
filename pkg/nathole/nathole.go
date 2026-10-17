@@ -73,12 +73,24 @@ type PrepareOptions struct {
 	// DisableAssistedAddrs disables the use of local network interfaces
 	// for assisted connections during NAT traversal
 	DisableAssistedAddrs bool
+	// UDPProxyURL forces Visitor STUN/hole punching and QUIC through SOCKS5
+	// UDP ASSOCIATE, without opening a raw public UDP socket.
+	UDPProxyURL string
+}
+
+// PacketConn is the subset used by XTCP NAT traversal and quic-go. The
+// standard *net.UDPConn and the loopback-only SOCKS5 association both satisfy
+// it. The latter can never send a packet directly to a public destination.
+type PacketConn interface {
+	net.PacketConn
+	ReadFromUDP([]byte) (int, *net.UDPAddr, error)
+	WriteToUDP([]byte, *net.UDPAddr) (int, error)
 }
 
 type PrepareResult struct {
 	Addrs         []string
 	AssistedAddrs []string
-	ListenConn    *net.UDPConn
+	ListenConn    PacketConn
 	NatType       string
 	Behavior      string
 }
@@ -116,6 +128,9 @@ func PreCheck(
 
 // Prepare is used to do some preparation work before penetration.
 func Prepare(stunServers []string, opts PrepareOptions) (*PrepareResult, error) {
+	if opts.UDPProxyURL != "" {
+		return prepareThroughSOCKS5(stunServers, opts)
+	}
 	// discover for Nat type
 	addrs, localAddr, err := Discover(stunServers, "")
 	if err != nil {
@@ -189,14 +204,21 @@ func ExchangeInfo(
 }
 
 // MakeHole is used to make a NAT hole between client and visitor.
-func MakeHole(ctx context.Context, listenConn *net.UDPConn, m *msg.NatHoleResp, key []byte) (*net.UDPConn, *net.UDPAddr, error) {
+func MakeHole(ctx context.Context, listenConn PacketConn, m *msg.NatHoleResp, key []byte) (PacketConn, *net.UDPAddr, error) {
 	xl := xlog.FromContextSafe(ctx)
+	if _, native := listenConn.(*net.UDPConn); !native {
+		// Native temporary sockets / IP TTL manipulation cannot be tunneled via
+		// SOCKS5. Fail instead of silently leaking the real VPS UDP source IP.
+		if m.DetectBehavior.ListenRandomPorts > 0 {
+			return nil, nil, fmt.Errorf("XTCP NAT detect requests extra native UDP sockets; refusing direct fallback from SOCKS5")
+		}
+	}
 	transactionID := NewTransactionID()
-	sendToRangePortsFunc := func(conn *net.UDPConn, addr string) error {
+	sendToRangePortsFunc := func(conn PacketConn, addr string) error {
 		return sendSidMessage(ctx, conn, m.Sid, transactionID, addr, key, m.DetectBehavior.TTL)
 	}
 
-	listenConns := []*net.UDPConn{listenConn}
+	listenConns := []PacketConn{listenConn}
 	var detectAddrs []string
 	if m.DetectBehavior.Role == DetectRoleSender {
 		// sender
@@ -258,12 +280,12 @@ func MakeHole(ctx context.Context, listenConn *net.UDPConn, m *msg.NatHoleResp, 
 	}
 
 	type result struct {
-		lConn *net.UDPConn
+		lConn PacketConn
 		raddr *net.UDPAddr
 	}
 	resultCh := make(chan result)
 	for _, conn := range listenConns {
-		go func(lConn *net.UDPConn) {
+		go func(lConn PacketConn) {
 			addr, err := waitDetectMessage(ctx, lConn, m.Sid, key, timeout, m.DetectBehavior.Role)
 			if err != nil {
 				lConn.Close()
@@ -288,7 +310,7 @@ func MakeHole(ctx context.Context, listenConn *net.UDPConn, m *msg.NatHoleResp, 
 }
 
 func waitDetectMessage(
-	ctx context.Context, conn *net.UDPConn, sid string, key []byte,
+	ctx context.Context, conn PacketConn, sid string, key []byte,
 	timeout time.Duration, role string,
 ) (*net.UDPAddr, error) {
 	xl := xlog.FromContextSafe(ctx)
@@ -334,7 +356,7 @@ func waitDetectMessage(
 }
 
 func sendSidMessage(
-	ctx context.Context, conn *net.UDPConn,
+	ctx context.Context, conn PacketConn,
 	sid string, transactionID string, addr string, key []byte, ttl int,
 ) error {
 	xl := xlog.FromContextSafe(ctx)
@@ -361,21 +383,29 @@ func sendSidMessage(
 		return err
 	}
 	if ttl > 0 {
-		uConn := ipv4.NewConn(conn)
-		original, err := uConn.TTL()
-		if err != nil {
-			xl.Tracef("get ttl error %v", err)
-			return err
-		}
-		xl.Tracef("original ttl %d", original)
-
-		err = uConn.SetTTL(ttl)
-		if err != nil {
-			xl.Tracef("set ttl error %v", err)
+		// SOCKS5 UDP relays cannot set remote packet IP TTL. Keep the original
+		// SOCKS5 association and send with its default TTL: this may reduce
+		// punch success with difficult NATs, but never exposes a raw VPS IP.
+		raw, ok := conn.(*net.UDPConn)
+		if !ok {
+			xl.Debugf("SOCKS5 UDP cannot apply TTL=%d NAT hint; sending via proxy with normal TTL", ttl)
 		} else {
-			defer func() {
-				_ = uConn.SetTTL(original)
-			}()
+			uConn := ipv4.NewConn(raw)
+			original, err := uConn.TTL()
+			if err != nil {
+				xl.Tracef("get ttl error %v", err)
+				return err
+			}
+			xl.Tracef("original ttl %d", original)
+
+			err = uConn.SetTTL(ttl)
+			if err != nil {
+				xl.Tracef("set ttl error %v", err)
+			} else {
+				defer func() {
+					_ = uConn.SetTTL(original)
+				}()
+			}
 		}
 	}
 
@@ -386,8 +416,8 @@ func sendSidMessage(
 }
 
 func sendSidMessageToRangePorts(
-	ctx context.Context, conn *net.UDPConn, addrs []string, ports []msg.PortsRange,
-	sendFunc func(*net.UDPConn, string) error,
+	ctx context.Context, conn PacketConn, addrs []string, ports []msg.PortsRange,
+	sendFunc func(PacketConn, string) error,
 ) {
 	xl := xlog.FromContextSafe(ctx)
 	for _, ip := range slices.Compact(parseIPs(addrs)) {
@@ -404,8 +434,8 @@ func sendSidMessageToRangePorts(
 }
 
 func sendSidMessageToRandomPorts(
-	ctx context.Context, conn *net.UDPConn, addrs []string, count int,
-	sendFunc func(*net.UDPConn, string) error,
+	ctx context.Context, conn PacketConn, addrs []string, count int,
+	sendFunc func(PacketConn, string) error,
 ) {
 	xl := xlog.FromContextSafe(ctx)
 	used := sets.New[int]()

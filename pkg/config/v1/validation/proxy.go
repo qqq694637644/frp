@@ -23,6 +23,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
+	"github.com/fatedier/frp/pkg/transport/xtcpdatagram"
 )
 
 func validateProxyBaseConfigForClient(c *v1.ProxyBaseConfig) error {
@@ -160,7 +161,7 @@ func validateSTCPProxyConfigForClient(c *v1.STCPProxyConfig) error {
 }
 
 func validateXTCPProxyConfigForClient(c *v1.XTCPProxyConfig) error {
-	return nil
+	return xtcpdatagram.Validate(c.Datagram)
 }
 
 func validateSUDPProxyConfigForClient(c *v1.SUDPProxyConfig) error {

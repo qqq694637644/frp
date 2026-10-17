@@ -34,6 +34,7 @@ import (
 	"github.com/fatedier/frp/pkg/naming"
 	"github.com/fatedier/frp/pkg/nathole"
 	"github.com/fatedier/frp/pkg/transport"
+	"github.com/fatedier/frp/pkg/transport/xtcpdatagram"
 	netpkg "github.com/fatedier/frp/pkg/util/net"
 	"github.com/fatedier/frp/pkg/util/util"
 	"github.com/fatedier/frp/pkg/util/xlog"
@@ -57,13 +58,13 @@ func (sv *XTCPVisitor) Run() (err error) {
 	if sv.cfg.Protocol == "kcp" {
 		sv.session = NewKCPTunnelSession()
 	} else {
-		sv.session = NewQUICTunnelSession(sv.clientCfg)
+		sv.session = NewQUICTunnelSession(sv.clientCfg, sv.cfg.Datagram)
 	}
 
 	if sv.cfg.BindPort > 0 {
 		sv.l, err = net.Listen("tcp", net.JoinHostPort(sv.cfg.BindAddr, strconv.Itoa(sv.cfg.BindPort)))
 		if err != nil {
-			return
+			return err
 		}
 		go sv.acceptLoop(sv.l, "xtcp local", sv.handleConn)
 	}
@@ -78,7 +79,7 @@ func (sv *XTCPVisitor) Run() (err error) {
 	if sv.plugin != nil {
 		sv.plugin.Start()
 	}
-	return
+	return err
 }
 
 func (sv *XTCPVisitor) Close() {
@@ -265,6 +266,10 @@ func (sv *XTCPVisitor) makeNatHole() {
 	if sv.cfg.NatTraversal != nil && sv.cfg.NatTraversal.DisableAssistedAddrs {
 		opts.DisableAssistedAddrs = true
 	}
+	if sv.cfg.NatTraversal != nil && sv.cfg.NatTraversal.UDPProxyURL != "" {
+		opts.UDPProxyURL = sv.cfg.NatTraversal.UDPProxyURL
+		opts.DisableAssistedAddrs = true
+	}
 
 	prepareResult, err := nathole.Prepare([]string{sv.clientCfg.NatHoleSTUNServer}, opts)
 	if err != nil {
@@ -319,7 +324,7 @@ func (sv *XTCPVisitor) makeNatHole() {
 }
 
 type TunnelSession interface {
-	Init(listenConn *net.UDPConn, raddr *net.UDPAddr) error
+	Init(listenConn net.PacketConn, raddr *net.UDPAddr) error
 	OpenConn(context.Context) (net.Conn, error)
 	Close()
 }
@@ -334,7 +339,11 @@ func NewKCPTunnelSession() TunnelSession {
 	return &KCPTunnelSession{}
 }
 
-func (ks *KCPTunnelSession) Init(listenConn *net.UDPConn, raddr *net.UDPAddr) error {
+func (ks *KCPTunnelSession) Init(listenConn net.PacketConn, raddr *net.UDPAddr) error {
+	_, ok := listenConn.(*net.UDPConn)
+	if !ok {
+		return fmt.Errorf("KCP cannot use a SOCKS5 UDP PacketConn")
+	}
 	listenConn.Close()
 	laddr, _ := net.ResolveUDPAddr("udp", listenConn.LocalAddr().String())
 	lConn, err := net.DialUDP("udp", laddr, raddr)
@@ -387,20 +396,23 @@ func (ks *KCPTunnelSession) Close() {
 }
 
 type QUICTunnelSession struct {
-	session    *quic.Conn
-	listenConn *net.UDPConn
-	mu         sync.RWMutex
+	session        *quic.Conn
+	listenConn     net.PacketConn
+	datagramBridge *xtcpdatagram.Bridge
+	mu             sync.RWMutex
 
-	clientCfg *v1.ClientCommonConfig
+	clientCfg   *v1.ClientCommonConfig
+	datagramCfg *xtcpdatagram.Config
 }
 
-func NewQUICTunnelSession(clientCfg *v1.ClientCommonConfig) TunnelSession {
+func NewQUICTunnelSession(clientCfg *v1.ClientCommonConfig, datagramCfg *xtcpdatagram.Config) TunnelSession {
 	return &QUICTunnelSession{
-		clientCfg: clientCfg,
+		clientCfg:   clientCfg,
+		datagramCfg: datagramCfg,
 	}
 }
 
-func (qs *QUICTunnelSession) Init(listenConn *net.UDPConn, raddr *net.UDPAddr) error {
+func (qs *QUICTunnelSession) Init(listenConn net.PacketConn, raddr *net.UDPAddr) error {
 	tlsConfig, err := transport.NewClientTLSConfig("", "", "", raddr.String())
 	if err != nil {
 		return fmt.Errorf("create tls config error: %v", err)
@@ -411,13 +423,28 @@ func (qs *QUICTunnelSession) Init(listenConn *net.UDPConn, raddr *net.UDPAddr) e
 			MaxIdleTimeout:     time.Duration(qs.clientCfg.Transport.QUIC.MaxIdleTimeout) * time.Second,
 			MaxIncomingStreams: int64(qs.clientCfg.Transport.QUIC.MaxIncomingStreams),
 			KeepAlivePeriod:    time.Duration(qs.clientCfg.Transport.QUIC.KeepalivePeriod) * time.Second,
+			EnableDatagrams:    qs.datagramCfg != nil,
 		})
 	if err != nil {
 		return fmt.Errorf("dial quic error: %v", err)
 	}
+	var bridge *xtcpdatagram.Bridge
+	if qs.datagramCfg != nil {
+		capability := quicConn.ConnectionState().SupportsDatagrams
+		if !capability.Local || !capability.Remote {
+			_ = quicConn.CloseWithError(0, "peer lacks DATAGRAM")
+			return fmt.Errorf("XTCP peer did not negotiate QUIC DATAGRAM")
+		}
+		bridge, err = xtcpdatagram.Start(context.Background(), quicConn, qs.datagramCfg)
+		if err != nil {
+			_ = quicConn.CloseWithError(0, "local datagram setup failed")
+			return fmt.Errorf("XTCP local datagram bridge error: %w", err)
+		}
+	}
 	qs.mu.Lock()
 	qs.session = quicConn
 	qs.listenConn = listenConn
+	qs.datagramBridge = bridge
 	qs.mu.Unlock()
 	return nil
 }
@@ -439,6 +466,10 @@ func (qs *QUICTunnelSession) OpenConn(ctx context.Context) (net.Conn, error) {
 func (qs *QUICTunnelSession) Close() {
 	qs.mu.Lock()
 	defer qs.mu.Unlock()
+	if qs.datagramBridge != nil {
+		qs.datagramBridge.Close()
+		qs.datagramBridge = nil
+	}
 	if qs.session != nil {
 		_ = qs.session.CloseWithError(0, "")
 		qs.session = nil

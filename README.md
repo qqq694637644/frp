@@ -1,5 +1,10 @@
 # frp
 
+> **Personal frpc fork:** Optional XTCP QUIC DATAGRAM support on the **two
+> frpc clients**, leaving third-party frps unchanged. Config examples, build
+> commands and the separate local UDP application interface are in
+> [XTCP QUIC DATAGRAM guide](doc/xtcp-quic-datagram.md).
+
 [![Build Status](https://circleci.com/gh/fatedier/frp.svg?style=shield)](https://circleci.com/gh/fatedier/frp)
 [![GitHub release](https://img.shields.io/github/tag/fatedier/frp.svg?label=release)](https://github.com/fatedier/frp/releases)
 [![GitHub Releases Stats](https://img.shields.io/github/downloads/fatedier/frp/total.svg?logo=github)](https://somsubhra.github.io/github-release-stats/?username=fatedier&repository=frp)

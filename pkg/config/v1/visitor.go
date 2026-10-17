@@ -17,6 +17,7 @@ package v1
 import (
 	"reflect"
 
+	"github.com/fatedier/frp/pkg/transport/xtcpdatagram"
 	"github.com/fatedier/frp/pkg/util/jsonx"
 	"github.com/fatedier/frp/pkg/util/util"
 )
@@ -152,6 +153,8 @@ type XTCPVisitorConfig struct {
 
 	// NatTraversal configuration for NAT traversal
 	NatTraversal *NatTraversalConfig `json:"natTraversal,omitempty"`
+	// Datagram is frpc-local; it is not included in NatHoleVisitor messages.
+	Datagram *xtcpdatagram.Config `json:"datagram,omitempty"`
 }
 
 func (c *XTCPVisitorConfig) Complete() {
@@ -160,6 +163,9 @@ func (c *XTCPVisitorConfig) Complete() {
 	c.Protocol = util.EmptyOr(c.Protocol, "quic")
 	c.MaxRetriesAnHour = util.EmptyOr(c.MaxRetriesAnHour, 8)
 	c.MinRetryInterval = util.EmptyOr(c.MinRetryInterval, 90)
+	if c.NatTraversal != nil && c.NatTraversal.UDPProxyURL != "" {
+		c.NatTraversal.DisableAssistedAddrs = true
+	}
 	c.FallbackTimeoutMs = util.EmptyOr(c.FallbackTimeoutMs, 1000)
 }
 
@@ -167,5 +173,6 @@ func (c *XTCPVisitorConfig) Clone() VisitorConfigurer {
 	out := *c
 	out.VisitorBaseConfig = c.VisitorBaseConfig.Clone()
 	out.NatTraversal = c.NatTraversal.Clone()
+	out.Datagram = c.Datagram.Clone()
 	return &out
 }
