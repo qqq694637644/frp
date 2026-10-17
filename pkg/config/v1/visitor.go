@@ -163,6 +163,9 @@ func (c *XTCPVisitorConfig) Complete() {
 	c.Protocol = util.EmptyOr(c.Protocol, "quic")
 	c.MaxRetriesAnHour = util.EmptyOr(c.MaxRetriesAnHour, 8)
 	c.MinRetryInterval = util.EmptyOr(c.MinRetryInterval, 90)
+	if c.NatTraversal != nil && c.NatTraversal.UDPProxyURL != "" {
+		c.NatTraversal.DisableAssistedAddrs = true
+	}
 	c.FallbackTimeoutMs = util.EmptyOr(c.FallbackTimeoutMs, 1000)
 }
 

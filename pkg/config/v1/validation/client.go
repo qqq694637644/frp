@@ -16,6 +16,7 @@ package validation
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -25,6 +26,7 @@ import (
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/policy/featuregate"
 	"github.com/fatedier/frp/pkg/policy/security"
+	"github.com/fatedier/frp/pkg/transport/socks5udp"
 )
 
 func (v *ConfigValidator) ValidateClientCommonConfig(c *v1.ClientCommonConfig) (Warning, error) {
@@ -211,10 +213,34 @@ func ValidateAllClientConfig(
 		}
 	}
 
-	for _, c := range visitorCfgs {
-		if err := ValidateVisitorConfigurer(c); err != nil {
-			return warnings, fmt.Errorf("visitor %s: %v", c.GetBaseConfig().Name, err)
+	for _, visitorCfg := range visitorCfgs {
+		if err := ValidateVisitorConfigurer(visitorCfg); err != nil {
+			return warnings, fmt.Errorf("visitor %s: %v", visitorCfg.GetBaseConfig().Name, err)
+		}
+		if xtcp, ok := visitorCfg.(*v1.XTCPVisitorConfig); ok &&
+			xtcp.NatTraversal != nil && xtcp.NatTraversal.UDPProxyURL != "" {
+			if err := validatePrivateXTCPRoute(visitorCfg.GetBaseConfig().Name, xtcp.NatTraversal.UDPProxyURL, c); err != nil {
+				return warnings, err
+			}
 		}
 	}
 	return warnings, nil
+}
+
+func validatePrivateXTCPRoute(name, udpURL string, common *v1.ClientCommonConfig) error {
+	if err := socks5udp.ValidateURL(udpURL); err != nil {
+		return fmt.Errorf("visitor %s: %w", name, err)
+	}
+	if common == nil || common.Transport.Protocol != "tcp" {
+		return fmt.Errorf("visitor %s: private XTCP requires transport.protocol=tcp", name)
+	}
+	if err := socks5udp.ValidateURL(common.Transport.ProxyURL); err != nil {
+		return fmt.Errorf("visitor %s: transport.proxyURL must use the same loopback WARP SOCKS5 as NAT UDP", name)
+	}
+	u, _ := url.Parse(udpURL)
+	v, _ := url.Parse(common.Transport.ProxyURL)
+	if u.Host != v.Host {
+		return fmt.Errorf("visitor %s: WARP SOCKS5 TCP and UDP proxy addresses must match", name)
+	}
+	return nil
 }

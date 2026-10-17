@@ -20,6 +20,7 @@ import (
 	"slices"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
+	"github.com/fatedier/frp/pkg/transport/socks5udp"
 	"github.com/fatedier/frp/pkg/transport/xtcpdatagram"
 )
 
@@ -64,6 +65,23 @@ func validateXTCPVisitorConfig(c *v1.XTCPVisitorConfig) error {
 	}
 	if err := xtcpdatagram.Validate(c.Datagram); err != nil {
 		return err
+	}
+	if c.Datagram != nil && (c.NatTraversal == nil || c.NatTraversal.UDPProxyURL == "") {
+		return fmt.Errorf("XTCP DATAGRAM Visitor requires natTraversal.udpProxyURL (no direct UDP fallback)")
+	}
+	if c.NatTraversal != nil && c.NatTraversal.UDPProxyURL != "" {
+		if c.Protocol != "quic" {
+			return fmt.Errorf("SOCKS5 UDP XTCP traversal requires QUIC")
+		}
+		if err := socks5udp.ValidateURL(c.NatTraversal.UDPProxyURL); err != nil {
+			return err
+		}
+		if !c.NatTraversal.DisableAssistedAddrs {
+			return fmt.Errorf("SOCKS5 UDP traversal requires disableAssistedAddrs=true")
+		}
+		if c.FallbackTo != "" {
+			return fmt.Errorf("SOCKS5 UDP traversal disallows fallbackTo")
+		}
 	}
 	return nil
 }

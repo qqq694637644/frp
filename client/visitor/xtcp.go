@@ -64,7 +64,7 @@ func (sv *XTCPVisitor) Run() (err error) {
 	if sv.cfg.BindPort > 0 {
 		sv.l, err = net.Listen("tcp", net.JoinHostPort(sv.cfg.BindAddr, strconv.Itoa(sv.cfg.BindPort)))
 		if err != nil {
-			return
+			return err
 		}
 		go sv.acceptLoop(sv.l, "xtcp local", sv.handleConn)
 	}
@@ -79,7 +79,7 @@ func (sv *XTCPVisitor) Run() (err error) {
 	if sv.plugin != nil {
 		sv.plugin.Start()
 	}
-	return
+	return err
 }
 
 func (sv *XTCPVisitor) Close() {
@@ -266,6 +266,10 @@ func (sv *XTCPVisitor) makeNatHole() {
 	if sv.cfg.NatTraversal != nil && sv.cfg.NatTraversal.DisableAssistedAddrs {
 		opts.DisableAssistedAddrs = true
 	}
+	if sv.cfg.NatTraversal != nil && sv.cfg.NatTraversal.UDPProxyURL != "" {
+		opts.UDPProxyURL = sv.cfg.NatTraversal.UDPProxyURL
+		opts.DisableAssistedAddrs = true
+	}
 
 	prepareResult, err := nathole.Prepare([]string{sv.clientCfg.NatHoleSTUNServer}, opts)
 	if err != nil {
@@ -320,7 +324,7 @@ func (sv *XTCPVisitor) makeNatHole() {
 }
 
 type TunnelSession interface {
-	Init(listenConn *net.UDPConn, raddr *net.UDPAddr) error
+	Init(listenConn net.PacketConn, raddr *net.UDPAddr) error
 	OpenConn(context.Context) (net.Conn, error)
 	Close()
 }
@@ -335,7 +339,11 @@ func NewKCPTunnelSession() TunnelSession {
 	return &KCPTunnelSession{}
 }
 
-func (ks *KCPTunnelSession) Init(listenConn *net.UDPConn, raddr *net.UDPAddr) error {
+func (ks *KCPTunnelSession) Init(listenConn net.PacketConn, raddr *net.UDPAddr) error {
+	_, ok := listenConn.(*net.UDPConn)
+	if !ok {
+		return fmt.Errorf("KCP cannot use a SOCKS5 UDP PacketConn")
+	}
 	listenConn.Close()
 	laddr, _ := net.ResolveUDPAddr("udp", listenConn.LocalAddr().String())
 	lConn, err := net.DialUDP("udp", laddr, raddr)
@@ -389,7 +397,7 @@ func (ks *KCPTunnelSession) Close() {
 
 type QUICTunnelSession struct {
 	session        *quic.Conn
-	listenConn     *net.UDPConn
+	listenConn     net.PacketConn
 	datagramBridge *xtcpdatagram.Bridge
 	mu             sync.RWMutex
 
@@ -404,7 +412,7 @@ func NewQUICTunnelSession(clientCfg *v1.ClientCommonConfig, datagramCfg *xtcpdat
 	}
 }
 
-func (qs *QUICTunnelSession) Init(listenConn *net.UDPConn, raddr *net.UDPAddr) error {
+func (qs *QUICTunnelSession) Init(listenConn net.PacketConn, raddr *net.UDPAddr) error {
 	tlsConfig, err := transport.NewClientTLSConfig("", "", "", raddr.String())
 	if err != nil {
 		return fmt.Errorf("create tls config error: %v", err)

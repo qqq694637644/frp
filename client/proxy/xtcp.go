@@ -123,7 +123,13 @@ func (pxy *XTCPProxy) InWorkConn(conn net.Conn, startWorkConnMsg *msg.StartWorkC
 	})
 
 	if natHoleRespMsg.Protocol == "kcp" {
-		pxy.listenByKCP(listenConn, raddr, startWorkConnMsg)
+		raw, ok := listenConn.(*net.UDPConn)
+		if !ok {
+			xl.Errorf("KCP requires native UDPConn")
+			listenConn.Close()
+			return
+		}
+		pxy.listenByKCP(raw, raddr, startWorkConnMsg)
 		return
 	}
 
@@ -178,7 +184,7 @@ func (pxy *XTCPProxy) listenByKCP(listenConn *net.UDPConn, raddr *net.UDPAddr, s
 	}
 }
 
-func (pxy *XTCPProxy) listenByQUIC(listenConn *net.UDPConn, _ *net.UDPAddr, startWorkConnMsg *msg.StartWorkConn) {
+func (pxy *XTCPProxy) listenByQUIC(listenConn net.PacketConn, _ *net.UDPAddr, startWorkConnMsg *msg.StartWorkConn) {
 	xl := pxy.xl
 	defer listenConn.Close()
 
