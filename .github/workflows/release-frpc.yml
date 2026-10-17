@@ -1,0 +1,124 @@
+name: Release frpc (Windows / Linux)
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: 'Branch to build (must exist in this repository)'
+        required: true
+        type: string
+        default: 'gpt/xtcp-quic-datagram'
+      version:
+        description: 'Release version/tag (example: v0.69.0-custom.1)'
+        required: true
+        type: string
+      platform:
+        description: 'Target platform'
+        required: true
+        type: choice
+        options:
+          - Linux
+          - Windows
+          - Both
+        default: Both
+      draft:
+        description: 'Publish as draft'
+        type: boolean
+        default: false
+      prerelease:
+        description: 'Mark as prerelease'
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: frpc-release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build ${{ inputs.platform }} from ${{ inputs.source_branch }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate release inputs
+        env:
+          SOURCE_BRANCH: ${{ inputs.source_branch }}
+          VERSION: ${{ inputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_BRANCH" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ ]] || { echo 'Invalid branch'; exit 1; }
+          [[ "$SOURCE_BRANCH" != *..* && "$SOURCE_BRANCH" != */ && "$SOURCE_BRANCH" != *///* ]] || { echo 'Invalid branch'; exit 1; }
+          [[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([-._+][A-Za-z0-9._-]+)?$ ]] || { echo 'Use a version such as v0.69.0-custom.1'; exit 1; }
+          echo "RELEASE_TAG=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Checkout selected branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_branch }}
+          persist-credentials: false
+
+      - name: Confirm branch and release tag safety
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_BRANCH: ${{ inputs.source_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin "+refs/heads/$SOURCE_BRANCH:refs/remotes/origin/$SOURCE_BRANCH"
+          BRANCH_SHA="$(git rev-parse "refs/remotes/origin/$SOURCE_BRANCH^{commit}")"
+          test "$(git rev-parse HEAD)" = "$BRANCH_SHA" || { echo 'Branch moved during checkout; retry release'; exit 1; }
+          echo "SOURCE_SHA=$BRANCH_SHA" >> "$GITHUB_ENV"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Tag $RELEASE_TAG already exists. Refusing to overwrite an existing release tag."
+            exit 1
+          fi
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists. Refusing to overwrite."
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build selected frpc binaries
+        env:
+          PLATFORM: ${{ inputs.platform }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          build() {
+            local os="$1" arch="amd64" suffix=""
+            if [[ "$os" == windows ]]; then suffix=".exe"; fi
+            local folder="frpc_${RELEASE_TAG}_${os}_${arch}"
+            mkdir -p "dist/$folder"
+            CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" go build -trimpath -tags 'frpc,noweb' \
+              -ldflags "-s -w" -o "dist/$folder/frpc$suffix" ./cmd/frpc
+            cp LICENSE "dist/$folder/LICENSE"
+            tar -C dist -czf "dist/$folder.tar.gz" "$folder"
+            rm -rf "dist/$folder"
+          }
+          if [[ "$PLATFORM" == Linux || "$PLATFORM" == Both ]]; then build linux; fi
+          if [[ "$PLATFORM" == Windows || "$PLATFORM" == Both ]]; then build windows; fi
+          (cd dist && sha256sum *.tar.gz > SHA256SUMS.txt)
+          ls -lh dist/
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ env.SOURCE_SHA }}
+          name: frpc ${{ env.RELEASE_TAG }}
+          draft: ${{ inputs.draft }}
+          prerelease: ${{ inputs.prerelease }}
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS.txt
+          fail_on_unmatched_files: true
