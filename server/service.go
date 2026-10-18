@@ -28,10 +28,10 @@ import (
 	"sync"
 	"time"
 
+	quic "github.com/apernet/quic-go"
 	"github.com/fatedier/golib/crypto"
 	"github.com/fatedier/golib/net/mux"
 	fmux "github.com/fatedier/yamux"
-	quic "github.com/apernet/quic-go"
 	"github.com/samber/lo"
 
 	"github.com/fatedier/frp/pkg/auth"

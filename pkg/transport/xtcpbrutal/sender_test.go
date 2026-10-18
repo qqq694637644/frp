@@ -21,8 +21,15 @@ func (r sampleRTT) SetMaxAckDelay(time.Duration)           {}
 func (r sampleRTT) SetInitialRTT(time.Duration)            {}
 
 func TestBrutalConfigStrictAndDefaultBounded(t *testing.T) {
-	for _, v := range [][2]int{{0, 24}, {-1, 20}, {16, 0}, {16, 15},
-		{65, 65}, {16, 65}, {100000000, 100000000}} {
+	for _, v := range [][2]int{
+		{0, 24},
+		{-1, 20},
+		{16, 0},
+		{16, 15},
+		{65, 65},
+		{16, 65},
+		{100000000, 100000000},
+	} {
 		if _, err := NewSender(v[0], v[1]); err == nil {
 			t.Fatalf("invalid rate accepted: %+v", v)
 		}
@@ -59,7 +66,7 @@ func TestBrutalPacingBudgetAndBurstRemainBounded(t *testing.T) {
 	if !s.HasPacingBudget(now) {
 		t.Fatal("first packet may not be sent")
 	}
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		s.OnPacketSent(now, 0, congestion.PacketNumber(i), s.maxPacket, true)
 	}
 	if s.pacer.lastBudget != 0 {

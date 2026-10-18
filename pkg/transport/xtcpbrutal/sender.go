@@ -85,10 +85,7 @@ func (s *Sender) pacedBytesPerSecond() int64 {
 		ack = 1
 	}
 	rate := int64(float64(s.targetBps) / ack)
-	if rate > s.maxBps {
-		rate = s.maxBps
-	}
-	return rate
+	return min(rate, s.maxBps)
 }
 
 func (s *Sender) TimeUntilSend(_ congestion.ByteCount) monotime.Time {
