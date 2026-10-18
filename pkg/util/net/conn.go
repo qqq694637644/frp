@@ -249,6 +249,11 @@ func (conn *wrapQuicStream) CloseWrite() error {
 	return conn.Stream.Close()
 }
 
+// DiagnosticQUIC exposes identity only; it never reads application bytes.
+func (conn *wrapQuicStream) DiagnosticQUIC() (*quic.Conn, uint64) {
+	return conn.c, uint64(conn.StreamID())
+}
+
 func NewCryptoReadWriter(rw io.ReadWriter, key []byte) (io.ReadWriter, error) {
 	encReader := libcrypto.NewReader(rw, key)
 	encWriter, err := libcrypto.NewWriter(rw, key)

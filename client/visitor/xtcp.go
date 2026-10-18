@@ -25,12 +25,12 @@ import (
 	"time"
 
 	quic "github.com/apernet/quic-go"
-	"github.com/apernet/quic-go/qlog"
 	libio "github.com/fatedier/golib/io"
 	fmux "github.com/fatedier/yamux"
 	"golang.org/x/time/rate"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
+	"github.com/fatedier/frp/pkg/diagnostics"
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/naming"
 	"github.com/fatedier/frp/pkg/nathole"
@@ -193,6 +193,7 @@ func (sv *XTCPVisitor) handleConn(userConn net.Conn) {
 		return
 	}
 	defer recycleFn()
+	defer diagnostics.LinkTCP(tunnelConn, userConn)()
 
 	var errs []error
 	if !sv.cfg.Transport.UseEncryption && !sv.cfg.Transport.UseCompression {
@@ -261,11 +262,14 @@ func (sv *XTCPVisitor) getTunnelConn(ctx context.Context) (net.Conn, error) {
 // 3. MakeNATHole
 // 4. Create a tunnel session using an underlying UDP connection.
 func (sv *XTCPVisitor) makeNatHole() {
+	started := time.Now()
+	diagnostics.Record(sv.cfg.Name, "xtcp", "starting", "NAT traversal", 0)
 	xl := xlog.FromContextSafe(sv.ctx)
 	targetProxyName := naming.BuildTargetServerProxyName(sv.clientCfg.User, sv.cfg.ServerUser, sv.cfg.ServerName)
 	xl.Tracef("makeNatHole start")
 	if err := nathole.PreCheck(sv.ctx, sv.helper.MsgTransporter(), targetProxyName, 5*time.Second); err != nil {
 		xl.Warnf("nathole precheck error: %v", err)
+		diagnostics.Record(sv.cfg.Name, "xtcp", "failed", "precheck: "+err.Error(), time.Since(started))
 		return
 	}
 
@@ -284,6 +288,7 @@ func (sv *XTCPVisitor) makeNatHole() {
 	prepareResult, err := nathole.Prepare([]string{sv.clientCfg.NatHoleSTUNServer}, opts)
 	if err != nil {
 		xl.Warnf("nathole prepare error: %v", err)
+		diagnostics.Record(sv.cfg.Name, "xtcp", "failed", "STUN: "+err.Error(), time.Since(started))
 		return
 	}
 
@@ -310,6 +315,7 @@ func (sv *XTCPVisitor) makeNatHole() {
 	if err != nil {
 		listenConn.Close()
 		xl.Warnf("nathole exchange info error: %v", err)
+		diagnostics.Record(sv.cfg.Name, "xtcp", "failed", "exchange: "+err.Error(), time.Since(started))
 		return
 	}
 
@@ -321,6 +327,7 @@ func (sv *XTCPVisitor) makeNatHole() {
 	if err != nil {
 		listenConn.Close()
 		xl.Warnf("make hole error: %v", err)
+		diagnostics.Record(sv.cfg.Name, "xtcp", "failed", "punch: "+err.Error(), time.Since(started))
 		return
 	}
 	listenConn = newListenConn
@@ -331,10 +338,12 @@ func (sv *XTCPVisitor) makeNatHole() {
 	if err := sv.session.Init(listenConn, raddr); err != nil {
 		listenConn.Close()
 		xl.Warnf("init tunnel session error: %v", err)
+		diagnostics.Record(sv.cfg.Name, "xtcp", "failed", "QUIC handshake: "+err.Error(), time.Since(started))
 		return
 	}
 	xl.Infof("XTCP tunnel handshake ready: sid [%s], protocol [%s], remoteAddr [%s]",
 		natHoleRespMsg.Sid, natHoleRespMsg.Protocol, raddr)
+	diagnostics.Record(sv.cfg.Name, "xtcp", "ready", fmt.Sprintf("sid=%s peer=%s", natHoleRespMsg.Sid, raddr), time.Since(started))
 }
 
 type TunnelSession interface {
@@ -432,6 +441,7 @@ func (qs *QUICTunnelSession) Init(listenConn net.PacketConn, raddr *net.UDPAddr)
 		return fmt.Errorf("create tls config error: %v", err)
 	}
 	tlsConfig.NextProtos = []string{"frp"}
+	diagScope := diagnostics.NewScope("visitor", "xtcp")
 	quicConn, err := quic.Dial(context.Background(), listenConn, raddr, tlsConfig,
 		&quic.Config{
 			MaxIdleTimeout:     time.Duration(qs.clientCfg.Transport.QUIC.MaxIdleTimeout) * time.Second,
@@ -449,11 +459,12 @@ func (qs *QUICTunnelSession) Init(listenConn net.PacketConn, raddr *net.UDPAddr)
 			MaxConnectionReceiveWindow:     20 * 1024 * 1024,
 			// With QLOGDIR set, trace RTT, packet loss, recovery and congestion.
 			// No tracing files are created when QLOGDIR is absent.
-			Tracer: qlog.DefaultConnectionTracer,
+			Tracer: diagScope.Tracer,
 		})
 	if err != nil {
 		return fmt.Errorf("dial quic error: %v", err)
 	}
+	var diagBrutal func() any
 	if opts := qs.clientCfg.Transport.QUIC; opts.CongestionMode == "brutal" {
 		controller, err := xtcpbrutal.NewSender(opts.TargetMbps, opts.MaxMbps)
 		if err != nil {
@@ -461,6 +472,7 @@ func (qs *QUICTunnelSession) Init(listenConn net.PacketConn, raddr *net.UDPAddr)
 			return fmt.Errorf("XTCP Visitor bounded Brutal setup: %w", err)
 		}
 		quicConn.SetCongestionControl(controller)
+		diagBrutal = func() any { return controller.DiagnosticsSnapshot() }
 		xlog.FromContextSafe(context.Background()).Infof(
 			"XTCP Visitor QUIC congestion=brutal targetMbps=%d maxMbps=%d (WARP SOCKS5 UDP only)",
 			opts.TargetMbps, opts.MaxMbps)
@@ -478,6 +490,7 @@ func (qs *QUICTunnelSession) Init(listenConn net.PacketConn, raddr *net.UDPAddr)
 			return fmt.Errorf("XTCP local datagram bridge error: %w", err)
 		}
 	}
+	diagScope.Attach(quicConn, diagBrutal)
 	qs.mu.Lock()
 	qs.session = quicConn
 	qs.listenConn = listenConn

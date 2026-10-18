@@ -31,6 +31,9 @@ import (
 )
 
 func (v *ConfigValidator) ValidateClientCommonConfig(c *v1.ClientCommonConfig) (Warning, error) {
+	if err := c.Diagnostics.Validate(); err != nil {
+		return nil, err
+	}
 	var (
 		warnings Warning
 		errs     error

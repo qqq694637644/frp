@@ -30,6 +30,7 @@ import (
 
 	"github.com/fatedier/frp/pkg/config/types"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
+	"github.com/fatedier/frp/pkg/diagnostics"
 	"github.com/fatedier/frp/pkg/msg"
 	plugin "github.com/fatedier/frp/pkg/plugin/client"
 	"github.com/fatedier/frp/pkg/transport"
@@ -251,6 +252,9 @@ func (pxy *BaseProxy) HandleTCPWorkConnection(workConn net.Conn, m *msg.StartWor
 	}
 
 	var errs []error
+	if baseCfg.Type == "xtcp" {
+		defer diagnostics.LinkTCP(workConn, localConn)()
+	}
 	if baseCfg.Type == "xtcp" && !baseCfg.Transport.UseEncryption && !baseCfg.Transport.UseCompression {
 		_, _, errs = netpkg.JoinHalfClose(localConn, remote)
 	} else {

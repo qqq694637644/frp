@@ -8,6 +8,7 @@ package xtcpbrutal
 
 import (
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/apernet/quic-go/congestion"
@@ -51,9 +52,13 @@ type Sender struct {
 	maxPacket congestion.ByteCount
 	rtt       congestion.RTTStatsProvider
 
-	samples  [samplesSeconds]packetSample
-	ackRatio float64
-	pacer    pacingBucket
+	samples      [samplesSeconds]packetSample
+	ackRatio     float64
+	pacer        pacingBucket
+	diagEnabled  atomic.Bool
+	diagSnapshot atomic.Pointer[DiagnosticSnapshot]
+	diagAt       monotime.Time
+	diagRawACK   float64
 }
 
 // NewSender configures a target rate and a strict *total wire pacing* ceiling,
@@ -107,6 +112,7 @@ func (s *Sender) OnPacketSent(now monotime.Time, _ congestion.ByteCount,
 	_ congestion.PacketNumber, size congestion.ByteCount, _ bool,
 ) {
 	s.pacer.sent(now, int64(size), s.pacedBytesPerSecond())
+	s.publishDiagnostics(now)
 }
 
 func (s *Sender) CanSend(inFlight congestion.ByteCount) bool {
@@ -159,6 +165,7 @@ func (s *Sender) SetMaxDatagramSize(size congestion.ByteCount) {
 func (s *Sender) OnCongestionEventEx(_ congestion.ByteCount, now monotime.Time,
 	acked []congestion.AckedPacketInfo, lost []congestion.LostPacketInfo,
 ) {
+	defer s.publishDiagnostics(now)
 	second := int64(time.Duration(now) / time.Second)
 	index := int(second % samplesSeconds)
 	if index < 0 {
@@ -179,6 +186,9 @@ func (s *Sender) OnCongestionEventEx(_ congestion.ByteCount, now monotime.Time,
 		}
 	}
 	total := confirmed + dropped
+	if total > 0 {
+		s.diagRawACK = float64(confirmed) / float64(total)
+	}
 	if total < minSamples {
 		s.ackRatio = 1
 		return
