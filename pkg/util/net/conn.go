@@ -24,8 +24,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	quic "github.com/apernet/quic-go"
 	libcrypto "github.com/fatedier/golib/crypto"
-	quic "github.com/quic-go/quic-go"
 
 	"github.com/fatedier/frp/pkg/util/xlog"
 )
@@ -239,6 +239,13 @@ func (conn *wrapQuicStream) RemoteAddr() net.Addr {
 
 func (conn *wrapQuicStream) Close() error {
 	conn.CancelRead(0)
+	return conn.Stream.Close()
+}
+
+// CloseWrite half-closes only the QUIC send direction (sends FIN), leaving
+// the receive direction active. RSX3 data streams require request EOF and
+// subsequent response bytes on the SAME independent QUIC stream.
+func (conn *wrapQuicStream) CloseWrite() error {
 	return conn.Stream.Close()
 }
 

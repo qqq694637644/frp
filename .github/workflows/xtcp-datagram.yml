@@ -23,4 +23,28 @@ jobs:
       - name: Unit and QUIC datagram integration tests
         run: go test -tags 'frpc,noweb' -count=1 ./pkg/transport/socks5udp ./pkg/transport/xtcpdatagram ./pkg/nathole ./pkg/config/v1/... ./client/proxy ./client/visitor
       - name: Build Linux amd64 frpc
-        run: CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags 'frpc,noweb' -o frpc ./cmd/frpc
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags 'frpc,noweb' -o frpc ./cmd/frpc
+          sha256sum frpc > frpc.sha256
+      - name: Upload private Linux frpc for NAT diagnostics
+        uses: actions/upload-artifact@v4
+        with:
+          name: frpc-warp-nat-diagnostics-linux-amd64
+          path: |
+            frpc
+            frpc.sha256
+          if-no-files-found: error
+          retention-days: 7
+      - name: Build mainland Windows amd64 frpc with fixed NAT UDP port
+        run: |
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -tags 'frpc,noweb' -o customfrpc.exe ./cmd/frpc
+          sha256sum customfrpc.exe > customfrpc.exe.sha256
+      - name: Upload mainland Windows frpc
+        uses: actions/upload-artifact@v4
+        with:
+          name: customfrpc-windows-fixed-nat-udp-port-amd64
+          path: |
+            customfrpc.exe
+            customfrpc.exe.sha256
+          if-no-files-found: error
+          retention-days: 7

@@ -33,16 +33,27 @@ func Discover(stunServers []string, localAddr string) ([]string, net.Addr, error
 	}
 	defer discoverConn.Close()
 
+	addresses, err := discoverAddresses(discoverConn, stunServers)
+	if err != nil {
+		return nil, nil, err
+	}
+	return addresses, discoverConn.localAddr, nil
+}
+
+// discoverAddresses retains ownership of the UDP socket with the caller.
+// XTCP can reuse that socket for punching and QUIC, keeping the same local
+// port and NAT mapping after STUN discovery.
+func discoverAddresses(discoverConn *discoverConn, stunServers []string) ([]string, error) {
 	addresses := make([]string, 0, len(stunServers))
 	for _, addr := range stunServers {
 		// get external address from stun server
 		externalAddrs, err := discoverConn.discoverFromStunServer(addr)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		addresses = append(addresses, externalAddrs...)
 	}
-	return addresses, discoverConn.localAddr, nil
+	return addresses, nil
 }
 
 type stunResponse struct {

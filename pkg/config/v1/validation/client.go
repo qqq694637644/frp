@@ -27,6 +27,7 @@ import (
 	"github.com/fatedier/frp/pkg/policy/featuregate"
 	"github.com/fatedier/frp/pkg/policy/security"
 	"github.com/fatedier/frp/pkg/transport/socks5udp"
+	"github.com/fatedier/frp/pkg/transport/xtcpbrutal"
 )
 
 func (v *ConfigValidator) ValidateClientCommonConfig(c *v1.ClientCommonConfig) (Warning, error) {
@@ -173,6 +174,19 @@ func validateTransportConfig(c *v1.ClientTransportConfig) (Warning, error) {
 	if !slices.Contains(SupportedWireProtocols, c.WireProtocol) {
 		errs = AppendError(errs, fmt.Errorf("invalid transport.wireProtocol, optional values are %v", SupportedWireProtocols))
 	}
+	switch c.QUIC.CongestionMode {
+	case "", "cubic":
+		if c.QUIC.TargetMbps != 0 || c.QUIC.MaxMbps != 0 {
+			errs = AppendError(errs, fmt.Errorf("transport.quic targetMbps/maxMbps require congestionMode=brutal"))
+		}
+	case "brutal":
+		if c.QUIC.TargetMbps < 1 || c.QUIC.TargetMbps > xtcpbrutal.MaxSafeMbps ||
+			c.QUIC.MaxMbps < c.QUIC.TargetMbps || c.QUIC.MaxMbps > xtcpbrutal.MaxSafeMbps {
+			errs = AppendError(errs, fmt.Errorf("transport.quic brutal requires 1 <= targetMbps <= maxMbps <= %d (arithmetic safety limit)", xtcpbrutal.MaxSafeMbps))
+		}
+	default:
+		errs = AppendError(errs, fmt.Errorf("unsupported transport.quic.congestionMode %q", c.QUIC.CongestionMode))
+	}
 	return warnings, errs
 }
 
@@ -222,6 +236,31 @@ func ValidateAllClientConfig(
 			if err := validatePrivateXTCPRoute(visitorCfg.GetBaseConfig().Name, xtcp.NatTraversal.UDPProxyURL, c); err != nil {
 				return warnings, err
 			}
+		}
+	}
+	if c != nil && c.Transport.QUIC.CongestionMode == "brutal" {
+		var eligible int
+		// The mainland XTCP Proxy is the sender for application uploads.
+		// It is allowed to retain its fixed native UDP port 39999; the VPS
+		// WARP-only requirement applies to the overseas Visitor instead.
+		for _, proxyCfg := range proxyCfgs {
+			if _, ok := proxyCfg.(*v1.XTCPProxyConfig); ok {
+				eligible++
+			}
+		}
+		for _, visitorCfg := range visitorCfgs {
+			visitor, ok := visitorCfg.(*v1.XTCPVisitorConfig)
+			if !ok {
+				continue
+			}
+			if visitor.Protocol != "quic" || visitor.NatTraversal == nil ||
+				visitor.NatTraversal.UDPProxyURL == "" {
+				return warnings, fmt.Errorf("transport.quic brutal requires every XTCP Visitor to use QUIC through WARP SOCKS5 UDP")
+			}
+			eligible++
+		}
+		if eligible == 0 {
+			return warnings, fmt.Errorf("transport.quic.congestionMode=brutal requires an XTCP Proxy or a QUIC Visitor using WARP SOCKS5 UDP")
 		}
 	}
 	return warnings, nil

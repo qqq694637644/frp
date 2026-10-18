@@ -24,9 +24,10 @@ import (
 	"sync"
 	"time"
 
+	quic "github.com/apernet/quic-go"
+	"github.com/apernet/quic-go/qlog"
 	libio "github.com/fatedier/golib/io"
 	fmux "github.com/fatedier/yamux"
-	quic "github.com/quic-go/quic-go"
 	"golang.org/x/time/rate"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
@@ -34,6 +35,7 @@ import (
 	"github.com/fatedier/frp/pkg/naming"
 	"github.com/fatedier/frp/pkg/nathole"
 	"github.com/fatedier/frp/pkg/transport"
+	"github.com/fatedier/frp/pkg/transport/xtcpbrutal"
 	"github.com/fatedier/frp/pkg/transport/xtcpdatagram"
 	netpkg "github.com/fatedier/frp/pkg/util/net"
 	"github.com/fatedier/frp/pkg/util/util"
@@ -192,7 +194,15 @@ func (sv *XTCPVisitor) handleConn(userConn net.Conn) {
 	}
 	defer recycleFn()
 
-	_, _, errs := libio.Join(userConn, muxConnRWCloser)
+	var errs []error
+	if !sv.cfg.Transport.UseEncryption && !sv.cfg.Transport.UseCompression {
+		_, _, errs = netpkg.JoinHalfClose(userConn, muxConnRWCloser)
+	} else {
+		// Layered compression/encryption wrappers don't expose CloseWrite.
+		// Keep the legacy behavior rather than pretending to support
+		// raw half-close semantics under those opt-in transformations.
+		_, _, errs = libio.Join(userConn, muxConnRWCloser)
+	}
 	xl.Debugf("join connections closed")
 	if len(errs) > 0 {
 		xl.Tracef("join connections errors: %v", errs)
@@ -316,11 +326,15 @@ func (sv *XTCPVisitor) makeNatHole() {
 	listenConn = newListenConn
 	xl.Infof("establishing nat hole connection successful, sid [%s], remoteAddr [%s]", natHoleRespMsg.Sid, raddr)
 
+	xl.Infof("XTCP tunnel handshake start: sid [%s], protocol [%s], remoteAddr [%s]",
+		natHoleRespMsg.Sid, natHoleRespMsg.Protocol, raddr)
 	if err := sv.session.Init(listenConn, raddr); err != nil {
 		listenConn.Close()
 		xl.Warnf("init tunnel session error: %v", err)
 		return
 	}
+	xl.Infof("XTCP tunnel handshake ready: sid [%s], protocol [%s], remoteAddr [%s]",
+		natHoleRespMsg.Sid, natHoleRespMsg.Protocol, raddr)
 }
 
 type TunnelSession interface {
@@ -424,9 +438,32 @@ func (qs *QUICTunnelSession) Init(listenConn net.PacketConn, raddr *net.UDPAddr)
 			MaxIncomingStreams: int64(qs.clientCfg.Transport.QUIC.MaxIncomingStreams),
 			KeepAlivePeriod:    time.Duration(qs.clientCfg.Transport.QUIC.KeepalivePeriod) * time.Second,
 			EnableDatagrams:    qs.datagramCfg != nil,
+			// SOCKS5 UDP framing and WARP encapsulation reduce effective path MTU.
+			// Prefer the conservative QUIC base size over probing bigger packets.
+			DisablePathMTUDiscovery: true,
+			// Inspired by Hysteria 2: allow multi-megabyte BDP while capping
+			// the total receive window. quic-go enforces congestion control.
+			InitialStreamReceiveWindow:     8 * 1024 * 1024,
+			MaxStreamReceiveWindow:         8 * 1024 * 1024,
+			InitialConnectionReceiveWindow: 20 * 1024 * 1024,
+			MaxConnectionReceiveWindow:     20 * 1024 * 1024,
+			// With QLOGDIR set, trace RTT, packet loss, recovery and congestion.
+			// No tracing files are created when QLOGDIR is absent.
+			Tracer: qlog.DefaultConnectionTracer,
 		})
 	if err != nil {
 		return fmt.Errorf("dial quic error: %v", err)
+	}
+	if opts := qs.clientCfg.Transport.QUIC; opts.CongestionMode == "brutal" {
+		controller, err := xtcpbrutal.NewSender(opts.TargetMbps, opts.MaxMbps)
+		if err != nil {
+			_ = quicConn.CloseWithError(0, "invalid bounded Brutal configuration")
+			return fmt.Errorf("XTCP Visitor bounded Brutal setup: %w", err)
+		}
+		quicConn.SetCongestionControl(controller)
+		xlog.FromContextSafe(context.Background()).Infof(
+			"XTCP Visitor QUIC congestion=brutal targetMbps=%d maxMbps=%d (WARP SOCKS5 UDP only)",
+			opts.TargetMbps, opts.MaxMbps)
 	}
 	var bridge *xtcpdatagram.Bridge
 	if qs.datagramCfg != nil {

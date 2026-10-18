@@ -1,11 +1,54 @@
 package validation
 
 import (
+	"strings"
 	"testing"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/transport/xtcpdatagram"
 )
+
+func TestXTCPProxyFixedNatUDPBindPortValidation(t *testing.T) {
+	proxy := &v1.XTCPProxyConfig{
+		ProxyBaseConfig: v1.ProxyBaseConfig{
+			Name: "node", Type: "xtcp",
+			ProxyBackend: v1.ProxyBackend{LocalIP: "127.0.0.1", LocalPort: 9312},
+		},
+		NatTraversal: &v1.NatTraversalConfig{BindPort: 39999},
+	}
+	proxy.Complete()
+	for _, port := range []int{0, 1, 39999, 65535} {
+		proxy.NatTraversal.BindPort = port
+		if err := ValidateProxyConfigurerForClient(proxy); err != nil {
+			t.Fatalf("rejected valid natTraversal.bindPort %d: %v", port, err)
+		}
+	}
+	for _, port := range []int{-1, 65536} {
+		proxy.NatTraversal.BindPort = port
+		err := ValidateProxyConfigurerForClient(proxy)
+		if err == nil || !strings.Contains(err.Error(), "natTraversal.bindPort") {
+			t.Fatalf("accepted invalid natTraversal.bindPort %d: %v", port, err)
+		}
+	}
+
+	// The fixed native UDP socket is deliberately a mainland XTCP Proxy
+	// option. The overseas SOCKS5-only Visitor must not silently ignore it.
+	visitor := &v1.XTCPVisitorConfig{
+		VisitorBaseConfig: v1.VisitorBaseConfig{
+			Name: "oversea", Type: "xtcp", ServerName: "node", BindPort: 6000,
+		},
+		Protocol: "quic",
+		NatTraversal: &v1.NatTraversalConfig{
+			BindPort:    39999,
+			UDPProxyURL: "socks5://127.0.0.1:40000",
+		},
+	}
+	visitor.Complete()
+	if err := ValidateVisitorConfigurer(visitor); err == nil ||
+		!strings.Contains(err.Error(), "only supported by XTCP proxies") {
+		t.Fatalf("visitor silently accepted native NAT bindPort: %v", err)
+	}
+}
 
 func TestXTCPDatagramIsQUICOnlyAndLocalOnly(t *testing.T) {
 	proxy := &v1.XTCPProxyConfig{

@@ -23,9 +23,9 @@ import (
 	"sync"
 	"time"
 
+	quic "github.com/apernet/quic-go"
 	libnet "github.com/fatedier/golib/net"
 	fmux "github.com/fatedier/yamux"
-	quic "github.com/quic-go/quic-go"
 	"github.com/samber/lo"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"

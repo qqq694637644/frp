@@ -57,6 +57,9 @@ func validateVisitorBaseConfig(c *v1.VisitorBaseConfig) error {
 }
 
 func validateXTCPVisitorConfig(c *v1.XTCPVisitorConfig) error {
+	if c.NatTraversal != nil && c.NatTraversal.BindPort != 0 {
+		return fmt.Errorf("natTraversal.bindPort is only supported by XTCP proxies")
+	}
 	if !slices.Contains([]string{"kcp", "quic"}, c.Protocol) {
 		return fmt.Errorf("protocol should be kcp or quic")
 	}

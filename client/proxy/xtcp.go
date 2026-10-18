@@ -22,14 +22,16 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/apernet/quic-go"
+	"github.com/apernet/quic-go/qlog"
 	fmux "github.com/fatedier/yamux"
-	"github.com/quic-go/quic-go"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/naming"
 	"github.com/fatedier/frp/pkg/nathole"
 	"github.com/fatedier/frp/pkg/transport"
+	"github.com/fatedier/frp/pkg/transport/xtcpbrutal"
 	"github.com/fatedier/frp/pkg/transport/xtcpdatagram"
 	netpkg "github.com/fatedier/frp/pkg/util/net"
 )
@@ -68,8 +70,12 @@ func (pxy *XTCPProxy) InWorkConn(conn net.Conn, startWorkConnMsg *msg.StartWorkC
 
 	// Prepare NAT traversal options
 	var opts nathole.PrepareOptions
-	if pxy.cfg.NatTraversal != nil && pxy.cfg.NatTraversal.DisableAssistedAddrs {
-		opts.DisableAssistedAddrs = true
+	if pxy.cfg.NatTraversal != nil {
+		opts.DisableAssistedAddrs = pxy.cfg.NatTraversal.DisableAssistedAddrs
+		opts.BindPort = pxy.cfg.NatTraversal.BindPort
+	}
+	if opts.BindPort != 0 {
+		xl.Infof("XTCP NAT using fixed local UDP port %d for STUN and hole punching", opts.BindPort)
 	}
 
 	prepareResult, err := nathole.Prepare([]string{pxy.clientCfg.NatHoleSTUNServer}, opts)
@@ -196,10 +202,16 @@ func (pxy *XTCPProxy) listenByQUIC(listenConn net.PacketConn, _ *net.UDPAddr, st
 	tlsConfig.NextProtos = []string{"frp"}
 	quicListener, err := quic.Listen(listenConn, tlsConfig,
 		&quic.Config{
-			MaxIdleTimeout:     time.Duration(pxy.clientCfg.Transport.QUIC.MaxIdleTimeout) * time.Second,
-			MaxIncomingStreams: int64(pxy.clientCfg.Transport.QUIC.MaxIncomingStreams),
-			KeepAlivePeriod:    time.Duration(pxy.clientCfg.Transport.QUIC.KeepalivePeriod) * time.Second,
-			EnableDatagrams:    pxy.cfg.Datagram != nil,
+			MaxIdleTimeout:                 time.Duration(pxy.clientCfg.Transport.QUIC.MaxIdleTimeout) * time.Second,
+			MaxIncomingStreams:             int64(pxy.clientCfg.Transport.QUIC.MaxIncomingStreams),
+			KeepAlivePeriod:                time.Duration(pxy.clientCfg.Transport.QUIC.KeepalivePeriod) * time.Second,
+			EnableDatagrams:                pxy.cfg.Datagram != nil,
+			DisablePathMTUDiscovery:        true,
+			InitialStreamReceiveWindow:     8 * 1024 * 1024,
+			MaxStreamReceiveWindow:         8 * 1024 * 1024,
+			InitialConnectionReceiveWindow: 20 * 1024 * 1024,
+			MaxConnectionReceiveWindow:     20 * 1024 * 1024,
+			Tracer:                         qlog.DefaultConnectionTracer,
 		},
 	)
 	if err != nil {
@@ -214,6 +226,16 @@ func (pxy *XTCPProxy) listenByQUIC(listenConn net.PacketConn, _ *net.UDPAddr, st
 		return
 	}
 	defer func() { _ = c.CloseWithError(0, "") }()
+	if opts := pxy.clientCfg.Transport.QUIC; opts.CongestionMode == "brutal" {
+		controller, err := xtcpbrutal.NewSender(opts.TargetMbps, opts.MaxMbps)
+		if err != nil {
+			xl.Errorf("XTCP Proxy bounded Brutal setup failed: %v", err)
+			return
+		}
+		c.SetCongestionControl(controller)
+		xl.Infof("XTCP Proxy QUIC congestion=brutal targetMbps=%d maxMbps=%d (fixed NAT port preserved)",
+			opts.TargetMbps, opts.MaxMbps)
+	}
 	if pxy.cfg.Datagram != nil {
 		capability := c.ConnectionState().SupportsDatagrams
 		if !capability.Local || !capability.Remote {

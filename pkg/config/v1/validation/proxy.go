@@ -161,6 +161,11 @@ func validateSTCPProxyConfigForClient(c *v1.STCPProxyConfig) error {
 }
 
 func validateXTCPProxyConfigForClient(c *v1.XTCPProxyConfig) error {
+	if c.NatTraversal != nil {
+		if err := ValidatePort(c.NatTraversal.BindPort, "natTraversal.bindPort"); err != nil {
+			return err
+		}
+	}
 	return xtcpdatagram.Validate(c.Datagram)
 }
 

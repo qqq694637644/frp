@@ -15,14 +15,38 @@ import (
 	"net/url"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 type Conn struct {
-	udp     *net.UDPConn
-	control *net.TCPConn
-	relay   *net.UDPAddr
-	once    sync.Once
+	proxyURL string
+	udp      *net.UDPConn
+	control  *net.TCPConn
+	relay    *net.UDPAddr
+	once     sync.Once
+	// NAT debugging counters describe traffic only as far as the local
+	// SOCKS5 relay. A successful local UDP write does NOT prove that WARP
+	// forwarded the datagram or that the remote peer received it.
+	localRelayWrites atomic.Uint64
+	localRelayReads  atomic.Uint64
+	droppedFrames    atomic.Uint64
+}
+
+// TrafficStats is an atomic snapshot of the local SOCKS5 UDP transport.
+// It intentionally never captures credentials or UDP payloads.
+type TrafficStats struct {
+	LocalRelayWrites uint64
+	LocalRelayReads  uint64
+	DroppedFrames    uint64
+}
+
+func (c *Conn) TrafficStats() TrafficStats {
+	return TrafficStats{
+		LocalRelayWrites: c.localRelayWrites.Load(),
+		LocalRelayReads:  c.localRelayReads.Load(),
+		DroppedFrames:    c.droppedFrames.Load(),
+	}
 }
 
 func ValidateURL(raw string) error {
@@ -155,7 +179,13 @@ func Dial(raw string) (*Conn, error) {
 		return nil, err
 	}
 	relayPort := int(binary.BigEndian.Uint16(port[:]))
-	if addr.Equal(net.IPv4zero) {
+	// RFC 1928 UDP ASSOCIATE can report an unspecified bind address, either
+	// 0.0.0.0 (IPv4) or :: (IPv6). Neither is a remote relay endpoint.
+	// The SOCKS5 control connection was established to 127.0.0.1 and the
+	// UDP socket is bound to IPv4 loopback, so try that same local proxy
+	// address without ever sending a raw UDP datagram to the VPS interface.
+	// IPv6-only local relays will fail closed until explicitly supported.
+	if addr != nil && addr.IsUnspecified() {
 		addr = net.IPv4(127, 0, 0, 1)
 	}
 	if addr.To4() == nil || !addr.IsLoopback() || relayPort == 0 {
@@ -164,7 +194,16 @@ func Dial(raw string) (*Conn, error) {
 	_ = control.SetDeadline(time.Time{})
 	successUDP = true
 	success = true
-	return &Conn{udp: udp, control: control, relay: &net.UDPAddr{IP: addr.To4(), Port: relayPort}}, nil
+	return &Conn{proxyURL: raw, udp: udp, control: control, relay: &net.UDPAddr{IP: addr.To4(), Port: relayPort}}, nil
+}
+
+// NewAssociation opens an independent UDP ASSOCIATE using the exact same
+// loopback SOCKS5 proxy as this connection. An XTCP NAT receiver may need
+// hundreds of separate source ports for hard-NAT hole punching. Each such
+// port must belong to its own SOCKS5 association; opening a native UDP
+// socket would expose the VPS's real source IP.
+func (c *Conn) NewAssociation() (*Conn, error) {
+	return Dial(c.proxyURL)
 }
 
 func writeAll(c net.Conn, data []byte) error {
@@ -202,6 +241,7 @@ func (c *Conn) WriteToUDP(data []byte, peer *net.UDPAddr) (int, error) {
 	if n != len(frame) {
 		return 0, io.ErrShortWrite
 	}
+	c.localRelayWrites.Add(1)
 	return len(data), nil
 }
 
@@ -224,8 +264,10 @@ func (c *Conn) ReadFromUDP(dst []byte) (int, *net.UDPAddr, error) {
 		}
 		if !from.IP.Equal(c.relay.IP) || from.Port != c.relay.Port || n < 10 ||
 			buf[0] != 0 || buf[1] != 0 || buf[2] != 0 || buf[3] != 1 {
+			c.droppedFrames.Add(1)
 			continue
 		}
+		c.localRelayReads.Add(1)
 		peer := &net.UDPAddr{
 			IP:   append(net.IP(nil), buf[4:8]...),
 			Port: int(binary.BigEndian.Uint16(buf[8:10])),
