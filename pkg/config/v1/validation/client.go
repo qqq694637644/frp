@@ -27,6 +27,7 @@ import (
 	"github.com/fatedier/frp/pkg/policy/featuregate"
 	"github.com/fatedier/frp/pkg/policy/security"
 	"github.com/fatedier/frp/pkg/transport/socks5udp"
+	"github.com/fatedier/frp/pkg/transport/xtcpbrutal"
 )
 
 func (v *ConfigValidator) ValidateClientCommonConfig(c *v1.ClientCommonConfig) (Warning, error) {
@@ -179,9 +180,9 @@ func validateTransportConfig(c *v1.ClientTransportConfig) (Warning, error) {
 			errs = AppendError(errs, fmt.Errorf("transport.quic targetMbps/maxMbps require congestionMode=brutal"))
 		}
 	case "brutal":
-		if c.QUIC.TargetMbps < 1 || c.QUIC.TargetMbps > 64 ||
-			c.QUIC.MaxMbps < c.QUIC.TargetMbps || c.QUIC.MaxMbps > 64 {
-			errs = AppendError(errs, fmt.Errorf("transport.quic brutal requires targetMbps=1..64 and maxMbps=targetMbps..64"))
+		if c.QUIC.TargetMbps < 1 || c.QUIC.TargetMbps > xtcpbrutal.MaxSafeMbps ||
+			c.QUIC.MaxMbps < c.QUIC.TargetMbps || c.QUIC.MaxMbps > xtcpbrutal.MaxSafeMbps {
+			errs = AppendError(errs, fmt.Errorf("transport.quic brutal requires 1 <= targetMbps <= maxMbps <= %d (arithmetic safety limit)", xtcpbrutal.MaxSafeMbps))
 		}
 	default:
 		errs = AppendError(errs, fmt.Errorf("unsupported transport.quic.congestionMode %q", c.QUIC.CongestionMode))

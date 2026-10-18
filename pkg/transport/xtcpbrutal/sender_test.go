@@ -26,8 +26,8 @@ func TestBrutalConfigStrictAndDefaultBounded(t *testing.T) {
 		{-1, 20},
 		{16, 0},
 		{16, 15},
-		{65, 65},
-		{16, 65},
+		{MaxSafeMbps + 1, MaxSafeMbps + 1},
+		{16, MaxSafeMbps + 1},
 		{100000000, 100000000},
 	} {
 		if _, err := NewSender(v[0], v[1]); err == nil {
@@ -126,5 +126,47 @@ func TestBrutalLossSamplesNeedFiftyPackets(t *testing.T) {
 		make([]congestion.LostPacketInfo, 30))
 	if s.ackRatio != 1 {
 		t.Fatalf("too few samples should not increase pacing: %f", s.ackRatio)
+	}
+}
+
+func TestBrutalAllowsRatesAboveLegacy64MbpsWithoutOverflow(t *testing.T) {
+	for _, rates := range [][2]int{
+		{64, 64},
+		{65, 65},
+		{128, 192},
+		{256, 512},
+		{1000, 2000},
+		{MaxSafeMbps - 1, MaxSafeMbps},
+	} {
+		s, err := NewSender(rates[0], rates[1])
+		if err != nil {
+			t.Fatalf("valid rates %v rejected: %v", rates, err)
+		}
+		if s.targetBps != int64(rates[0])*bytesPerMbps || s.maxBps != int64(rates[1])*bytesPerMbps {
+			t.Fatalf("rates %v converted incorrectly", rates)
+		}
+		s.ackRatio = 0.5 // compensating packet loss must respect maxMbps
+		if rate := s.pacedBytesPerSecond(); rate <= 0 || rate > s.maxBps {
+			t.Fatalf("rates %v produced invalid pacing speed %d", rates, rate)
+		}
+		now := monotime.Now()
+		s.pacer.lastAt = now
+		s.pacer.lastBudget = congestion.ByteCount(s.pacer.maxBurst(s.pacedBytesPerSecond()) - 1000)
+		for _, delay := range []time.Duration{
+			0, time.Nanosecond, time.Millisecond,
+			time.Second - time.Nanosecond, time.Second, 10 * time.Second,
+		} {
+			budget := s.pacer.budget(now.Add(delay), s.pacedBytesPerSecond())
+			if budget < 0 || budget > s.pacer.maxBurst(s.pacedBytesPerSecond()) {
+				t.Fatalf("rates %v overflowed token bucket for delay %v: %d", rates, delay, budget)
+			}
+		}
+		s.SetRTTStatsProvider(sampleRTT(20 * time.Second))
+		if cwnd := s.GetCongestionWindow(); cwnd < minWindowBytes || cwnd > maxWindowBytes {
+			t.Fatalf("rates %v overflowed bounded congestion window: %d", rates, cwnd)
+		}
+	}
+	if MaxSafeMbps <= 64 {
+		t.Fatalf("legacy 64 Mbps artificial cap still active: %d", MaxSafeMbps)
 	}
 }

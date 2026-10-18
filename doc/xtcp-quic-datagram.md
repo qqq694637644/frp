@@ -123,7 +123,7 @@ quic-go 原生 qlog：在境内外 frpc 启动前设置 `QLOGDIR` 环境变量�
 
 ### XTCP QUIC 双端 Brutal 风格实验发送器（默认关闭）
 
-用于测试高丢包时能否保持预设发送速率，不涉及 KCP，也不发送无界冗余包。参考 Hysteria 2 的 Brutal 设计，但本 fork 独立实现了 5 秒 ACK/loss 采样、保守丢包补偿、token-bucket pacing、最高 **64 Mbps** 的配置限制和 **8 MiB** 的连接发送窗口上限。QUIC 自身的加密、ACK、重传、流控、DATAGRAM 继续生效；**最大带宽是所有发包（含重传）共同遵守的长期 pacing 上限，不是额外可叠加的速率**。网络拥塞下提速并不保证，带宽设得太高仍然可能加剧拥塞。
+用于测试高丢包时能否保持预设发送速率，不涉及 KCP，也不发送无界冗余包。参考 Hysteria 2 的 Brutal 设计，但本 fork 独立实现了 5 秒 ACK/loss 采样、保守丢包补偿与 token-bucket pacing。**旧版人为的 64 Mbps 上限已删除**：可设置 64/64、128/192、256/512 等更高参数，只保留防止 Go 纳秒计时乘法溢出的数值安全校验（约 73,786 Mbps）与 **8 MiB** 的连接发送窗口上限。QUIC 自身的加密、ACK、重传、流控、DATAGRAM 继续生效；**最大带宽是所有发包（含重传）共同遵守的长期 pacing 上限，不是额外可叠加的速率**。更高配置不会自动扩大 8 MiB 拥塞窗口或保证更高吞吐，网络拥塞下反而可能更慢。
 
 需要先将 **境内 Windows XTCP Proxy 与境外 VPS XTCP Visitor 的 frpc 都升级到本次构建**。在两端 `frpc.toml` 的**文件根部**、任何 `[[proxies]]` / `[[visitors]]` 表格之前，分别加入：
 
@@ -135,9 +135,9 @@ transport.quic.targetMbps = 16
 transport.quic.maxMbps = 24
 ```
 
-境外 x-ui 反向 SOCKS5 页面可选择「Brutal 风格」，分别填写目标速率 16 Mbps 与最大发包速率 24 Mbps；保存时自动生成上述根部字段。x-ui **只能管理境外 frpc**，所以境内 `frpc.toml` 仍需手动设置这些相同字段。两端的发送方向彼此独立，例如境外参数控制视频下载方向，境内参数控制上传方向。带宽参数可以不同，但建议首轮双方都设置 16/24，再依实验结果逐步调整。
+境外 x-ui 反向 SOCKS5 页面可选择「Brutal 风格」，分别填写目标速率与最大发包速率；保存时自动生成上述根部字段。x-ui **只能管理境外 frpc**，所以境内 `frpc.toml` 仍需手动设置。两端的发送方向彼此独立，例如境外参数控制视频下载方向，境内参数控制上传方向。带宽参数可以不同；若 64/64 比 32/48 更稳定，先保留实际测得更好的值，再逐步测试 96/128 或 128/192，不应直接将速率设到上万 Mbps。
 
-恢复普通控制器：两端删除以上三个字段（或设 `transport.quic.congestionMode = "cubic"` 且不设置目标速率参数），x-ui 同时选「CUBIC / 默认」，然后重新连接。**Brutal 模式的配置验证是严格的**：必须提供合法 1–64 Mbps 数值；境外 Visitor 仍必须配置 `transport.proxyURL` 和相同的 `natTraversal.udpProxyURL` 指向本地 WARP SOCKS5，同时禁用辅助地址与回退；境内 Proxy 固定 `natTraversal.bindPort=39999` 不变；frps v0.69.0 完全不变。若 x-ui 检测到旧版 frpc 忽略 Brutal 配置，它会拒绝应用，而不是悄悄退回 CUBIC。
+恢复普通控制器：两端删除以上三个字段（或设 `transport.quic.congestionMode = "cubic"` 且不设置目标速率参数），x-ui 同时选「CUBIC / 默认」，然后重新连接。**Brutal 模式的配置验证仍然严格**：目标速率必须为正，总发送上限必须不低于目标，且不得导致计时运算溢出；境外 Visitor 仍必须配置 `transport.proxyURL` 和相同的 `natTraversal.udpProxyURL` 指向本地 WARP SOCKS5，同时禁用辅助地址与回退；境内 Proxy 固定 `natTraversal.bindPort=39999` 不变；frps v0.69.0 完全不变。若 x-ui 检测到旧版 frpc 忽略 Brutal 配置，它会拒绝应用，而不是悄悄退回 CUBIC。
 
 首轮先使用普通 CUBIC 基线测试 10 MB 下载，再以 Brutal 双端 16/24 运行相同测试，并用两端 `QLOGDIR` 比较 RTT、packet_lost、recovery 和拥塞窗口。不应把本地假 WARP 测试当成真实跨境速度的保证。
 

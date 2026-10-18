@@ -1,6 +1,6 @@
 // Package xtcpbrutal implements an opt-in bounded rate-based QUIC congestion
 // controller for XTCP Visitor traffic. The policy is inspired by Hysteria 2's
-// Brutal controller but keeps an explicit absolute pacing cap.
+// Brutal controller but keeps an explicit configured pacing cap.
 //
 // It does not generate duplicate packets, disable QUIC loss recovery, alter
 // XTCP NAT traversal, or create any new public UDP sockets.
@@ -22,7 +22,14 @@ const (
 	maxWindowBytes  = 8 * 1024 * 1024
 	maxBurstPackets = 10
 	burstMillis     = 4
-	maxRateMbps     = 64
+	bytesPerMbps    = int64(125_000)
+
+	// MaxSafeMbps is an arithmetic guard, NOT an arbitrary 64 Mbps policy
+	// limit. The token bucket multiplies bytes/sec by elapsed nanoseconds;
+	// reject inputs that could overflow that multiplication on 64-bit Go.
+	// This allows rates up to roughly 73 Gbps while retaining bounded
+	// pacing, congestion windows, and QUIC backpressure.
+	MaxSafeMbps = int((1<<63 - 1) / (bytesPerMbps * int64(time.Second)))
 )
 
 var (
@@ -53,13 +60,13 @@ type Sender struct {
 // both expressed in decimal megabits per second. QUIC headers and retransmits
 // use the same pacing budget, rather than being extra unbounded traffic.
 func NewSender(targetMbps, maxMbps int) (*Sender, error) {
-	if targetMbps < 1 || targetMbps > maxRateMbps ||
-		maxMbps < targetMbps || maxMbps > maxRateMbps {
-		return nil, fmt.Errorf("bounded Brutal requires targetMbps=1..64 and maxMbps=targetMbps..64")
+	if targetMbps < 1 || targetMbps > MaxSafeMbps ||
+		maxMbps < targetMbps || maxMbps > MaxSafeMbps {
+		return nil, fmt.Errorf("bounded Brutal requires 1 <= targetMbps <= maxMbps <= %d (arithmetic safety limit)", MaxSafeMbps)
 	}
 	s := &Sender{
-		targetBps: int64(targetMbps) * 125000,
-		maxBps:    int64(maxMbps) * 125000,
+		targetBps: int64(targetMbps) * bytesPerMbps,
+		maxBps:    int64(maxMbps) * bytesPerMbps,
 		maxPacket: congestion.InitialPacketSize,
 		ackRatio:  1,
 	}
@@ -116,8 +123,11 @@ func (s *Sender) GetCongestionWindow() congestion.ByteCount {
 	}
 	// Two RTTs of paced traffic give the fixed-rate pacer room to operate.
 	// Never permit an unbounded in-flight queue.
-	window := int64(float64(s.pacedBytesPerSecond()) * rtt.Seconds() * 2)
-	return congestion.ByteCount(max(minWindowBytes, min(window, maxWindowBytes)))
+	window := float64(s.pacedBytesPerSecond()) * rtt.Seconds() * 2
+	if window >= float64(maxWindowBytes) {
+		return maxWindowBytes
+	}
+	return congestion.ByteCount(max(minWindowBytes, int64(window)))
 }
 
 func (s *Sender) MaybeExitSlowStart() {}
@@ -201,6 +211,10 @@ func (b *pacingBucket) budget(at monotime.Time, rate int64) int64 {
 		return burst
 	}
 	earned := rate * age.Nanoseconds() / int64(time.Second)
+	remaining := burst - min(burst, int64(b.lastBudget))
+	if earned >= remaining {
+		return burst
+	}
 	return min(burst, int64(b.lastBudget)+earned)
 }
 

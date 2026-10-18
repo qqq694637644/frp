@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
+	"github.com/fatedier/frp/pkg/transport/xtcpbrutal"
 )
 
 // Brutal is deliberately an opt-in XTCP QUIC transmit policy on both sides:
@@ -19,7 +20,8 @@ func TestBrutalStrictModeAndRateLimits(t *testing.T) {
 		{CongestionMode: "brutal", TargetMbps: 0, MaxMbps: 24},
 		{CongestionMode: "brutal", TargetMbps: 16, MaxMbps: 0},
 		{CongestionMode: "brutal", TargetMbps: 24, MaxMbps: 16},
-		{CongestionMode: "brutal", TargetMbps: 16, MaxMbps: 65},
+		{CongestionMode: "brutal", TargetMbps: 16, MaxMbps: xtcpbrutal.MaxSafeMbps + 1},
+		{CongestionMode: "brutal", TargetMbps: xtcpbrutal.MaxSafeMbps + 1, MaxMbps: xtcpbrutal.MaxSafeMbps + 1},
 		{CongestionMode: "brutal", TargetMbps: -1, MaxMbps: 24},
 		{CongestionMode: "wrong"},
 		{CongestionMode: "cubic", TargetMbps: 16, MaxMbps: 24},
@@ -38,6 +40,12 @@ func TestBrutalStrictModeAndRateLimits(t *testing.T) {
 		common.Transport.QUIC = opts
 		if _, err := NewConfigValidator(nil).ValidateClientCommonConfig(common); err != nil {
 			t.Fatalf("valid congestion configuration %q rejected: %v", mode, err)
+		}
+	}
+	for _, limits := range [][2]int{{65, 65}, {128, 192}, {256, 512}, {1000, 2000}, {xtcpbrutal.MaxSafeMbps, xtcpbrutal.MaxSafeMbps}} {
+		common.Transport.QUIC = v1.QUICOptions{CongestionMode: "brutal", TargetMbps: limits[0], MaxMbps: limits[1]}
+		if _, err := NewConfigValidator(nil).ValidateClientCommonConfig(common); err != nil {
+			t.Fatalf("valid expanded rate %v rejected: %v", limits, err)
 		}
 	}
 }
