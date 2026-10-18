@@ -22,15 +22,16 @@ import (
 	"reflect"
 	"time"
 
+	"github.com/apernet/quic-go"
+	"github.com/apernet/quic-go/qlog"
 	fmux "github.com/fatedier/yamux"
-	"github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/qlog"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/naming"
 	"github.com/fatedier/frp/pkg/nathole"
 	"github.com/fatedier/frp/pkg/transport"
+	"github.com/fatedier/frp/pkg/transport/xtcpbrutal"
 	"github.com/fatedier/frp/pkg/transport/xtcpdatagram"
 	netpkg "github.com/fatedier/frp/pkg/util/net"
 )
@@ -225,6 +226,16 @@ func (pxy *XTCPProxy) listenByQUIC(listenConn net.PacketConn, _ *net.UDPAddr, st
 		return
 	}
 	defer func() { _ = c.CloseWithError(0, "") }()
+	if opts := pxy.clientCfg.Transport.QUIC; opts.CongestionMode == "brutal" {
+		controller, err := xtcpbrutal.NewSender(opts.TargetMbps, opts.MaxMbps)
+		if err != nil {
+			xl.Errorf("XTCP Proxy bounded Brutal setup failed: %v", err)
+			return
+		}
+		c.SetCongestionControl(controller)
+		xl.Infof("XTCP Proxy QUIC congestion=brutal targetMbps=%d maxMbps=%d (fixed NAT port preserved)",
+			opts.TargetMbps, opts.MaxMbps)
+	}
 	if pxy.cfg.Datagram != nil {
 		capability := c.ConnectionState().SupportsDatagrams
 		if !capability.Local || !capability.Remote {

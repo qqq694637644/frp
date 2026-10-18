@@ -39,6 +39,14 @@ type QUICOptions struct {
 	KeepalivePeriod    int `json:"keepalivePeriod,omitempty"`
 	MaxIdleTimeout     int `json:"maxIdleTimeout,omitempty"`
 	MaxIncomingStreams int `json:"maxIncomingStreams,omitempty"`
+	// CongestionMode selects the XTCP Visitor QUIC sender's congestion
+	// controller: empty/cubic preserves the default, brutal opts into bounded
+	// rate-based sending. This does NOT alter the frpc-to-frps control channel.
+	CongestionMode string `json:"congestionMode,omitempty"`
+	// TargetMbps is the desired application link rate in megabits/second.
+	// MaxMbps bounds total paced traffic, including any loss compensation.
+	TargetMbps int `json:"targetMbps,omitempty"`
+	MaxMbps    int `json:"maxMbps,omitempty"`
 }
 
 func (c *QUICOptions) Complete() {

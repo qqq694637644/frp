@@ -24,10 +24,10 @@ import (
 	"sync"
 	"time"
 
+	quic "github.com/apernet/quic-go"
+	"github.com/apernet/quic-go/qlog"
 	libio "github.com/fatedier/golib/io"
 	fmux "github.com/fatedier/yamux"
-	quic "github.com/quic-go/quic-go"
-	"github.com/quic-go/quic-go/qlog"
 	"golang.org/x/time/rate"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
@@ -35,6 +35,7 @@ import (
 	"github.com/fatedier/frp/pkg/naming"
 	"github.com/fatedier/frp/pkg/nathole"
 	"github.com/fatedier/frp/pkg/transport"
+	"github.com/fatedier/frp/pkg/transport/xtcpbrutal"
 	"github.com/fatedier/frp/pkg/transport/xtcpdatagram"
 	netpkg "github.com/fatedier/frp/pkg/util/net"
 	"github.com/fatedier/frp/pkg/util/util"
@@ -452,6 +453,17 @@ func (qs *QUICTunnelSession) Init(listenConn net.PacketConn, raddr *net.UDPAddr)
 		})
 	if err != nil {
 		return fmt.Errorf("dial quic error: %v", err)
+	}
+	if opts := qs.clientCfg.Transport.QUIC; opts.CongestionMode == "brutal" {
+		controller, err := xtcpbrutal.NewSender(opts.TargetMbps, opts.MaxMbps)
+		if err != nil {
+			_ = quicConn.CloseWithError(0, "invalid bounded Brutal configuration")
+			return fmt.Errorf("XTCP Visitor bounded Brutal setup: %w", err)
+		}
+		quicConn.SetCongestionControl(controller)
+		xlog.FromContextSafe(context.Background()).Infof(
+			"XTCP Visitor QUIC congestion=brutal targetMbps=%d maxMbps=%d (WARP SOCKS5 UDP only)",
+			opts.TargetMbps, opts.MaxMbps)
 	}
 	var bridge *xtcpdatagram.Bridge
 	if qs.datagramCfg != nil {

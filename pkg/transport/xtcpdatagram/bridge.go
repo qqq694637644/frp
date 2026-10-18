@@ -27,7 +27,7 @@ import (
 	"strconv"
 	"sync"
 
-	"github.com/quic-go/quic-go"
+	"github.com/apernet/quic-go"
 )
 
 // MaxPayload is a conservative per-packet application payload limit.

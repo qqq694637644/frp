@@ -25,7 +25,7 @@ import (
 	"time"
 
 	libcrypto "github.com/fatedier/golib/crypto"
-	quic "github.com/quic-go/quic-go"
+	quic "github.com/apernet/quic-go"
 
 	"github.com/fatedier/frp/pkg/util/xlog"
 )

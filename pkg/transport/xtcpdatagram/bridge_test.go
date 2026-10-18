@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/quic-go/quic-go"
+	"github.com/apernet/quic-go"
 )
 
 func loopbackPort(t *testing.T) int {
