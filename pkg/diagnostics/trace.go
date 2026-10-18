@@ -74,9 +74,6 @@ type (
 	}
 )
 
-//go:fix inline
-func ptr[T any](x T) *T { return new(x) }
-
 func (c *connection) snapshot() ConnectionSnapshot {
 	c.mu.Lock()
 	defer c.mu.Unlock()

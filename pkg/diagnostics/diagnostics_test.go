@@ -118,7 +118,7 @@ func TestDiagnosticsNativeQlogBoundedUnredacted(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := &connection{hub: h, id: "visitor:test-original-id", odcid: "test-original-id", role: "visitor"}
-	c.captureEvent(qlog.ConnectionClosed{ApplicationError: ptr(qlog.ApplicationErrorCode(1)), Reason: "original.example 203.0.113.7:443"})
+	c.captureEvent(qlog.ConnectionClosed{ApplicationError: new(qlog.ApplicationErrorCode(1)), Reason: "original.example 203.0.113.7:443"})
 	h.StopCapture()
 	files, status := h.CaptureData()
 	if status == nil || status.State != "stopped" || len(files) != 1 {
