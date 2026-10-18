@@ -44,8 +44,8 @@ type ConnectionSnapshot struct {
 	DatagramReceived         uint64            `json:"datagram_received"`
 	DatagramDrops            map[string]uint64 `json:"datagram_drops"`
 	PTOCount                 uint32            `json:"pto_count"`
-	Updated                  time.Time         `json:"updated"`
 	Brutal                   any               `json:"brutal,omitempty"`
+	Updated                  time.Time         `json:"updated"`
 }
 type (
 	interval   struct{ lo, hi int64 }
