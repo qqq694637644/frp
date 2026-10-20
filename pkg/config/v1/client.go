@@ -19,6 +19,7 @@ import (
 
 	"github.com/samber/lo"
 
+	"github.com/fatedier/frp/pkg/diagnostics"
 	"github.com/fatedier/frp/pkg/util/util"
 )
 
@@ -60,10 +61,11 @@ type ClientCommonConfig struct {
 	// set.
 	Start []string `json:"start,omitempty"`
 
-	Log        LogConfig             `json:"log,omitempty"`
-	WebServer  WebServerConfig       `json:"webServer,omitempty"`
-	Transport  ClientTransportConfig `json:"transport,omitempty"`
-	VirtualNet VirtualNetConfig      `json:"virtualNet,omitempty"`
+	Log         LogConfig             `json:"log,omitempty"`
+	WebServer   WebServerConfig       `json:"webServer,omitempty"`
+	Transport   ClientTransportConfig `json:"transport,omitempty"`
+	VirtualNet  VirtualNetConfig      `json:"virtualNet,omitempty"`
+	Diagnostics diagnostics.Config    `json:"diagnostics,omitempty"`
 
 	// FeatureGates specifies a set of feature gates to enable or disable.
 	// This can be used to enable alpha/beta features or disable default features.

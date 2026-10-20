@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - 'gpt/xtcp-quic-datagram'
+      - 'gpt/rsx3-diagnostics'
   pull_request:
     branches:
       - dev
@@ -22,6 +23,8 @@ jobs:
           test -z "$(gofmt -l client/proxy/xtcp.go client/visitor/xtcp.go pkg/config/v1/common.go pkg/config/v1/proxy.go pkg/config/v1/visitor.go pkg/config/v1/validation/client.go pkg/config/v1/validation/proxy.go pkg/config/v1/validation/visitor.go pkg/config/v1/validation/xtcp_datagram_test.go pkg/nathole/nathole.go pkg/nathole/socks5_prepare.go pkg/transport/socks5udp/*.go pkg/transport/xtcpdatagram/*.go)"
       - name: Unit and QUIC datagram integration tests
         run: go test -tags 'frpc,noweb' -count=1 ./pkg/transport/socks5udp ./pkg/transport/xtcpdatagram ./pkg/nathole ./pkg/config/v1/... ./client/proxy ./client/visitor
+      - name: Test authenticated live QUIC diagnostics and race safety
+        run: go test -race -count=1 -timeout 120s ./pkg/diagnostics ./pkg/transport/xtcpbrutal
       - name: Build Linux amd64 frpc
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -tags 'frpc,noweb' -o frpc ./cmd/frpc

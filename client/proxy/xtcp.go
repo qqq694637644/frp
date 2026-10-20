@@ -23,10 +23,10 @@ import (
 	"time"
 
 	"github.com/apernet/quic-go"
-	"github.com/apernet/quic-go/qlog"
 	fmux "github.com/fatedier/yamux"
 
 	v1 "github.com/fatedier/frp/pkg/config/v1"
+	"github.com/fatedier/frp/pkg/diagnostics"
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/naming"
 	"github.com/fatedier/frp/pkg/nathole"
@@ -200,6 +200,7 @@ func (pxy *XTCPProxy) listenByQUIC(listenConn net.PacketConn, _ *net.UDPAddr, st
 		return
 	}
 	tlsConfig.NextProtos = []string{"frp"}
+	diagScope := diagnostics.NewScope("proxy", pxy.cfg.Name)
 	quicListener, err := quic.Listen(listenConn, tlsConfig,
 		&quic.Config{
 			MaxIdleTimeout:                 time.Duration(pxy.clientCfg.Transport.QUIC.MaxIdleTimeout) * time.Second,
@@ -211,7 +212,7 @@ func (pxy *XTCPProxy) listenByQUIC(listenConn net.PacketConn, _ *net.UDPAddr, st
 			MaxStreamReceiveWindow:         8 * 1024 * 1024,
 			InitialConnectionReceiveWindow: 20 * 1024 * 1024,
 			MaxConnectionReceiveWindow:     20 * 1024 * 1024,
-			Tracer:                         qlog.DefaultConnectionTracer,
+			Tracer:                         diagScope.Tracer,
 		},
 	)
 	if err != nil {
@@ -226,6 +227,7 @@ func (pxy *XTCPProxy) listenByQUIC(listenConn net.PacketConn, _ *net.UDPAddr, st
 		return
 	}
 	defer func() { _ = c.CloseWithError(0, "") }()
+	var diagBrutal func() any
 	if opts := pxy.clientCfg.Transport.QUIC; opts.CongestionMode == "brutal" {
 		controller, err := xtcpbrutal.NewSender(opts.TargetMbps, opts.MaxMbps)
 		if err != nil {
@@ -233,9 +235,11 @@ func (pxy *XTCPProxy) listenByQUIC(listenConn net.PacketConn, _ *net.UDPAddr, st
 			return
 		}
 		c.SetCongestionControl(controller)
+		diagBrutal = func() any { return controller.DiagnosticsSnapshot() }
 		xl.Infof("XTCP Proxy QUIC congestion=brutal targetMbps=%d maxMbps=%d (fixed NAT port preserved)",
 			opts.TargetMbps, opts.MaxMbps)
 	}
+	diagScope.Attach(c, diagBrutal)
 	if pxy.cfg.Datagram != nil {
 		capability := c.ConnectionState().SupportsDatagrams
 		if !capability.Local || !capability.Remote {

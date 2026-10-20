@@ -34,6 +34,7 @@ import (
 	"github.com/fatedier/frp/pkg/config/source"
 	v1 "github.com/fatedier/frp/pkg/config/v1"
 	"github.com/fatedier/frp/pkg/config/v1/validation"
+	"github.com/fatedier/frp/pkg/diagnostics"
 	"github.com/fatedier/frp/pkg/msg"
 	"github.com/fatedier/frp/pkg/policy/security"
 	httppkg "github.com/fatedier/frp/pkg/util/http"
@@ -239,6 +240,11 @@ func (svr *Service) Run(ctx context.Context) error {
 	svr.lifecycleMu.Unlock()
 	defer cancel(nil)
 	defer svr.stop()
+	if stopDiagnostics, err := diagnostics.Start(ctx, svr.common.Diagnostics); err != nil {
+		log.Warnf("diagnostics unavailable (forwarding unchanged): %v", err)
+	} else {
+		defer stopDiagnostics()
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -296,6 +302,7 @@ func (svr *Service) keepControllerWorking() {
 		return
 	}
 	<-ctl.Done()
+	diagnostics.Record("frps", "control", "disconnected", "control connection closed", 0)
 
 	// There is a situation where the login is successful but due to certain reasons,
 	// the control immediately exits. It is necessary to limit the frequency of reconnection in this case.
@@ -332,6 +339,8 @@ func (svr *Service) loopLoginUntilSuccess(maxInterval time.Duration, firstLoginE
 	xl := xlog.FromContextSafe(svr.ctx)
 
 	loginFunc := func() (bool, error) {
+		started := time.Now()
+		diagnostics.Record("frps", "control", "starting", svr.common.ServerAddr, 0)
 		xl.Infof("try to connect to server...")
 		dialer := &controlSessionDialer{
 			ctx:              svr.ctx,
@@ -344,6 +353,7 @@ func (svr *Service) loopLoginUntilSuccess(maxInterval time.Duration, firstLoginE
 		sessionCtx, err := dialer.Dial(svr.runID)
 		if err != nil {
 			xl.Warnf("connect to server error: %v", err)
+			diagnostics.Record("frps", "control", "failed", err.Error(), time.Since(started))
 			if firstLoginExit {
 				svr.cancel(cancelErr{Err: err})
 			}
@@ -353,6 +363,7 @@ func (svr *Service) loopLoginUntilSuccess(maxInterval time.Duration, firstLoginE
 		svr.runID = sessionCtx.RunID
 		xl.AddPrefix(xlog.LogPrefix{Name: "runID", Value: svr.runID})
 		xl.Infof("login to server success, get run id [%s]", svr.runID)
+		diagnostics.Record("frps", "control", "ready", "run_id="+svr.runID, time.Since(started))
 
 		svr.cfgMu.RLock()
 		proxyCfgs := svr.proxyCfgs

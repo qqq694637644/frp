@@ -28,6 +28,8 @@ import (
 	"sync"
 
 	"github.com/apernet/quic-go"
+
+	"github.com/fatedier/frp/pkg/diagnostics"
 )
 
 // MaxPayload is a conservative per-packet application payload limit.
@@ -133,9 +135,11 @@ func (b *Bridge) fromApplication(ctx context.Context) {
 		}
 		// Only the configured local application may inject UDP.
 		if !from.IP.Equal(b.peer.IP) || from.Port != b.peer.Port {
+			diagnostics.Drop(b.conn, "wrong_local_peer")
 			continue
 		}
 		if n > MaxPayload {
+			diagnostics.Drop(b.conn, "application_oversize")
 			log.Printf("xtcp datagram: dropped %d-byte local packet (max %d)", n, MaxPayload)
 			continue
 		}
@@ -146,11 +150,13 @@ func (b *Bridge) fromApplication(ctx context.Context) {
 			// than silently converted into reliable streams.
 			var tooLarge *quic.DatagramTooLargeError
 			if errors.As(err, &tooLarge) {
+				diagnostics.Drop(b.conn, "path_mtu")
 				log.Printf("xtcp datagram: packet exceeds QUIC path MTU: %v", err)
 				continue
 			}
 			if ctx.Err() == nil {
 				log.Printf("xtcp datagram: QUIC send failed: %v", err)
+				diagnostics.Drop(b.conn, "quic_send")
 			}
 			return
 		}
@@ -168,9 +174,14 @@ func (b *Bridge) toApplication(ctx context.Context) {
 			return
 		}
 		if len(packet) > MaxPayload {
+			diagnostics.Drop(b.conn, "remote_oversize")
+			continue
+		}
+		if diagnostics.Datagram(b.conn, packet) {
 			continue
 		}
 		if _, err := b.socket.WriteToUDP(packet, b.peer); err != nil {
+			diagnostics.Drop(b.conn, "local_delivery")
 			return
 		}
 	}
